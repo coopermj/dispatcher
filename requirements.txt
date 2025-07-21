@@ -1,0 +1,16 @@
+# Google API dependencies
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+
+# Web scraping and HTML processing
+beautifulsoup4
+html2text
+
+# Browser automation
+playwright
+
+# Utility dependencies
+pathlib2
+python-dotenv
