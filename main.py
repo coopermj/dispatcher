@@ -1,5 +1,115 @@
-#!/usr/bin/env python3
-"""
+async def process_content(self, max_items=None, force_reprocess=None, upload_to_remarkable=None):
+    """Main content processing function (emails or website articles)"""
+    # Set defaults based on processing mode
+    if self.processing_mode == 'email':
+        max_items = max_items or DEFAULT_MAX_EMAILS
+    else:
+        max_items = max_items or MAX_ARTICLES
+
+    force_reprocess = force_reprocess if force_reprocess is not None else DEFAULT_FORCE_REPROCESS
+    upload_to_remarkable = upload_to_remarkable if upload_to_remarkable is not None else DEFAULT_UPLOAD_TO_REMARKABLE
+
+    # Update stats
+    self.stats['remarkable_enabled'] = upload_to_remarkable
+
+    start_time = time.time()
+
+    try:
+        # Initialize all components
+        if not await self.initialize():
+            return False
+
+        # Get content to process based on mode
+        if self.processing_mode == 'email':
+            content_list = await self.get_email_content(max_items)
+        else:
+            content_list = await self.get_website_content(max_items)
+
+        if not content_list:
+            print(f"❌ No {self.processing_mode} content found")
+            return False
+
+        # Filter content if not force reprocessing
+        if not force_reprocess:
+            original_count = len(content_list)
+            content_list = [
+                content for content in content_list
+                if not self.tracking_manager.is_email_processed(content)
+            ]
+            skipped_count = original_count - len(content_list)
+            if skipped_count > 0:
+                print(f"⏭️  {skipped_count} items already processed (use force_reprocess=True to override)")
+
+        if not content_list:
+            print("✅ All content has been processed already!")
+            return True
+
+        print(f"\n🔄 Converting {len(content_list)} items to PDF...")
+
+        # Process each item
+        for i, content_data in enumerate(content_list, 1):
+            await self.process_single_item(content_data, i)
+
+            # Small delay between conversions
+            if i < len(content_list):
+                await asyncio.sleep(SLEEP_BETWEEN_CONVERSIONS)
+
+        # Calculate processing time
+        self.stats['processing_time'] = time.time() - start_time
+
+        # Print final summary
+        self.print_final_summary()
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Error during processing: {e}")
+        print(f"🔧 Debug info: {traceback.format_exc()}")
+        return False
+
+    finally:
+        # Always close browser session
+        await self.browser_manager.close_browser_session()
+
+
+async def get_email_content(self, max_emails):
+    """Get email content to process"""
+    print(f"\n🔍 Searching for up to {max_emails} emails from The Dispatch...")
+    messages = self.email_handler.search_dispatch_emails(max_emails)
+
+    if not messages:
+        return []
+
+    self.stats['total_emails'] = len(messages)
+
+    # Process email list to extract data
+    print(f"\n📧 Processing {len(messages)} emails...")
+    return self.email_handler.process_email_list(messages)
+
+
+async def get_website_content(self, max_articles):
+    """Get website content to process"""
+    print(f"\n🔍 Scanning website for up to {max_articles} articles...")
+
+    articles = await self.website_scanner.scan_for_articles(max_articles)
+    self.stats['total_articles'] = len(articles)
+
+    if articles:
+        self.website_scanner.print_articles_summary()
+
+    # Convert articles to format compatible with email processing
+    content_list = []
+    for article in articles:
+        content_data = self.website_scanner.create_article_data_for_processing(article)
+        content_list.append(content_data)
+
+    return content_list
+
+
+async def process_single_item(self, content_data, index):  # !/usr/bin/env python3
+
+
+    """
 The Dispatch Email to PDF Converter - Modular Version
 Main entry point for the application
 """
@@ -12,7 +122,7 @@ from pathlib import Path
 # Import modules
 from modules import (
     AuthManager, EmailHandler, BrowserManager,
-    TrackingManager, ReMarkableManager
+    TrackingManager, ReMarkableManager, WebsiteScanner
 )
 from modules.utils import (
     setup_logging, create_safe_pdf_filename,
@@ -22,7 +132,7 @@ from modules.utils import (
 from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
-    DEFAULT_RMAPI_PATH
+    DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES
 )
 
 
@@ -36,14 +146,17 @@ class DispatchConverter:
         self.browser_manager = BrowserManager()
         self.tracking_manager = TrackingManager()
         self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH)
+        self.website_scanner = WebsiteScanner(self.browser_manager)
 
         # Configuration
         self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
+        self.processing_mode = PROCESSING_MODE
 
         # Statistics
         self.stats = {
             'total_emails': 0,
+            'total_articles': 0,
             'successful_conversions': 0,
             'skipped_duplicates': 0,
             'failed_conversions': 0,
@@ -51,7 +164,8 @@ class DispatchConverter:
             'remarkable_failures': 0,
             'remarkable_enabled': False,
             'processing_time': 0,
-            'total_file_size': 0
+            'total_file_size': 0,
+            'processing_mode': self.processing_mode
         }
 
     def print_startup_banner(self):
@@ -59,28 +173,38 @@ class DispatchConverter:
         print("🚀 THE DISPATCH PDF CONVERTER - MODULAR VERSION")
         print("📊 Enhanced with duplicate tracking and prevention")
         print("⚙️  Configuration loaded from .env file")
+        print(f"🔄 Processing mode: {self.processing_mode.upper()}")
         print("=" * 65)
         print("Features:")
         print("• Modular architecture with separate components")
         print("• .env file configuration support")
-        print("• Tracks processed emails to prevent duplicates")
+        print("• Dual mode: Email processing OR website scanning")
+        print("• Tracks processed content to prevent duplicates")
         print("• Removes headers and saves authentication cookies")
         print("• Keeps the browser open throughout the entire process")
         print("• Uploads PDFs to ReMarkable News folder using rmapi")
-        print("• Shows tracking summary and recently processed emails")
-        print("\n📋 Processing steps:")
-        print("1. Load configuration from .env file")
-        print("2. Load tracking data from previous runs")
-        print("3. Show summary of previously processed emails")
-        print("4. Check rmapi availability (if enabled)")
-        print("5. Authenticate with Google Gmail API")
-        print("6. Start browser and authenticate with The Dispatch")
-        print("7. Search for emails from The Dispatch")
-        print("8. Skip emails that were already processed")
-        print("9. Convert newsletter URLs to PDFs")
-        print("10. Upload PDFs to ReMarkable (if enabled)")
-        print("11. Update tracking database")
-        print("12. Generate summary report")
+        print("• Shows tracking summary and recently processed content")
+
+        if self.processing_mode == 'email':
+            print("\n📧 EMAIL MODE - Processing steps:")
+            print("1. Load configuration from .env file")
+            print("2. Load tracking data from previous runs")
+            print("3. Authenticate with Google Gmail API")
+            print("4. Search for emails from The Dispatch")
+            print("5. Skip emails that were already processed")
+            print("6. Convert newsletter URLs to PDFs")
+        else:
+            print("\n🌐 WEBSITE MODE - Processing steps:")
+            print("1. Load configuration from .env file")
+            print("2. Load tracking data from previous runs")
+            print("3. Scan thedispatch.com for articles")
+            print("4. Filter articles by age and keywords")
+            print("5. Skip articles that were already processed")
+            print("6. Convert article URLs to PDFs")
+
+        print("7. Upload PDFs to ReMarkable (if enabled)")
+        print("8. Update tracking database")
+        print("9. Generate summary report")
         print("\n📁 Files created:")
         print(f"- PDFs in: {self.output_dir}")
         print("- HTML snapshots in: debug_html/")
@@ -106,17 +230,18 @@ class DispatchConverter:
         # Clean up tracking data
         self.tracking_manager.cleanup_tracking_data(self.output_dir)
 
-        # Authenticate with Google
-        if not self.auth_manager.authenticate_google():
-            print("❌ Google authentication failed")
-            return False
+        # For email mode, authenticate with Google
+        if self.processing_mode == 'email':
+            if not self.auth_manager.authenticate_google():
+                print("❌ Google authentication failed")
+                return False
 
         # Start browser session
         if not await self.browser_manager.start_browser_session():
             print("❌ Browser session failed to start")
             return False
 
-        # Authenticate with The Dispatch
+        # Authenticate with The Dispatch (required for both modes)
         page = self.browser_manager.get_page()
         context = self.browser_manager.get_context()
 
@@ -127,6 +252,111 @@ class DispatchConverter:
 
         print("✅ All components initialized successfully")
         return True
+
+    async def process_content(self, max_items=None, force_reprocess=None, upload_to_remarkable=None):
+        """Main content processing function (emails or website articles)"""
+        # Set defaults based on processing mode
+        if self.processing_mode == 'email':
+            max_items = max_items or DEFAULT_MAX_EMAILS
+        else:
+            max_items = max_items or MAX_ARTICLES
+
+        force_reprocess = force_reprocess if force_reprocess is not None else DEFAULT_FORCE_REPROCESS
+        upload_to_remarkable = upload_to_remarkable if upload_to_remarkable is not None else DEFAULT_UPLOAD_TO_REMARKABLE
+
+        # Update stats
+        self.stats['remarkable_enabled'] = upload_to_remarkable
+
+        start_time = time.time()
+
+        try:
+            # Initialize all components
+            if not await self.initialize():
+                return False
+
+            # Get content to process based on mode
+            if self.processing_mode == 'email':
+                content_list = await self.get_email_content(max_items)
+            else:
+                content_list = await self.get_website_content(max_items)
+
+            if not content_list:
+                print(f"❌ No {self.processing_mode} content found")
+                return False
+
+            # Filter content if not force reprocessing
+            if not force_reprocess:
+                original_count = len(content_list)
+                content_list = [
+                    content for content in content_list
+                    if not self.tracking_manager.is_email_processed(content)
+                ]
+                skipped_count = original_count - len(content_list)
+                if skipped_count > 0:
+                    print(f"⏭️  {skipped_count} items already processed (use force_reprocess=True to override)")
+
+            if not content_list:
+                print("✅ All content has been processed already!")
+                return True
+
+            print(f"\n🔄 Converting {len(content_list)} items to PDF...")
+
+            # Process each item
+            for i, content_data in enumerate(content_list, 1):
+                await self.process_single_item(content_data, i)
+
+                # Small delay between conversions
+                if i < len(content_list):
+                    await asyncio.sleep(SLEEP_BETWEEN_CONVERSIONS)
+
+            # Calculate processing time
+            self.stats['processing_time'] = time.time() - start_time
+
+            # Print final summary
+            self.print_final_summary()
+
+            return True
+
+        except Exception as e:
+            print(f"❌ Error during processing: {e}")
+            print(f"🔧 Debug info: {traceback.format_exc()}")
+            return False
+
+        finally:
+            # Always close browser session
+            await self.browser_manager.close_browser_session()
+
+    async def get_email_content(self, max_emails):
+        """Get email content to process"""
+        print(f"\n🔍 Searching for up to {max_emails} emails from The Dispatch...")
+        messages = self.email_handler.search_dispatch_emails(max_emails)
+
+        if not messages:
+            return []
+
+        self.stats['total_emails'] = len(messages)
+
+        # Process email list to extract data
+        print(f"\n📧 Processing {len(messages)} emails...")
+        return self.email_handler.process_email_list(messages)
+
+    async def get_website_content(self, max_articles):
+        """Get website content to process"""
+        print(f"\n🔍 Scanning website for up to {max_articles} articles...")
+
+        articles = await self.website_scanner.scan_for_articles(max_articles)
+        self.stats['total_articles'] = len(articles)
+
+        if articles:
+            self.website_scanner.print_articles_summary()
+
+        # Convert articles to format compatible with email processing
+        content_list = []
+        for article in articles:
+            content_data = self.website_scanner.create_article_data_for_processing(article)
+            content_list.append(content_data)
+
+        return content_list
 
     async def process_single_email(self, email_data, index):
         """Process a single email and convert to PDF"""
@@ -208,82 +438,101 @@ class DispatchConverter:
             self.stats['failed_conversions'] += 1
             return False
 
-    async def process_emails(self, max_emails=None, force_reprocess=None, upload_to_remarkable=None):
-        """Main email processing function"""
-        # Set defaults
-        max_emails = max_emails or DEFAULT_MAX_EMAILS
-        force_reprocess = force_reprocess if force_reprocess is not None else DEFAULT_FORCE_REPROCESS
-        upload_to_remarkable = upload_to_remarkable if upload_to_remarkable is not None else DEFAULT_UPLOAD_TO_REMARKABLE
-
-        # Update stats
-        self.stats['remarkable_enabled'] = upload_to_remarkable
-
-        start_time = time.time()
-
+    async def process_single_item(self, content_data, index):
+        """Process a single item (email or article) and convert to PDF"""
         try:
-            # Initialize all components
-            if not await self.initialize():
-                return False
+            item_type = "email" if self.processing_mode == 'email' else "article"
+            print(f"\n📄 Processing {item_type}: {content_data['subject']}")
 
-            # Search for emails
-            print(f"\n🔍 Searching for up to {max_emails} emails from The Dispatch...")
-            messages = self.email_handler.search_dispatch_emails(max_emails)
-
-            if not messages:
-                print("❌ No emails found")
-                return False
-
-            self.stats['total_emails'] = len(messages)
-
-            # Process email list to extract data
-            print(f"\n📧 Processing {len(messages)} emails...")
-            email_list = self.email_handler.process_email_list(messages)
-
-            # Filter emails if not force reprocessing
-            if not force_reprocess:
-                original_count = len(email_list)
-                email_list = [
-                    email for email in email_list
-                    if not self.tracking_manager.is_email_processed(email)
-                ]
-                skipped_count = original_count - len(email_list)
-                if skipped_count > 0:
-                    print(f"⏭️  {skipped_count} emails already processed (use force_reprocess=True to override)")
-
-            if not email_list:
-                print("✅ All emails have been processed already!")
+            # Check if already processed
+            if self.tracking_manager.is_email_processed(content_data):
+                processed_info = self.tracking_manager.get_processed_info(content_data)
+                print(f"⏭️  SKIPPED - Already processed on {processed_info.get('processed_date', 'unknown date')}")
+                print(f"📁 Existing PDF: {processed_info.get('pdf_path', 'unknown path')}")
+                print(
+                    f"📤 ReMarkable: {'✅ Uploaded' if processed_info.get('remarkable_uploaded') else '❌ Not uploaded'}")
+                self.stats['skipped_duplicates'] += 1
                 return True
 
-            print(f"\n🔄 Converting {len(email_list)} emails to PDF...")
+            # Check for content URL
+            content_url = content_data.get('read_online_url')
+            if not content_url:
+                print(f"❌ No URL found for {item_type}, skipping...")
+                self.stats['failed_conversions'] += 1
+                return False
 
-            # Process each email
-            for i, email_data in enumerate(email_list, 1):
-                await self.process_single_email(email_data, i)
+            print(f"🔗 Found URL: {content_url}")
 
-                # Small delay between conversions
-                if i < len(email_list):
-                    await asyncio.sleep(SLEEP_BETWEEN_CONVERSIONS)
+            # Create PDF filename
+            pdf_filename = create_safe_pdf_filename(
+                content_data['subject'],
+                index=index,
+                output_dir=self.output_dir,
+                prefix=f"dispatch_{self.processing_mode}"
+            )
 
-            # Calculate processing time
-            self.stats['processing_time'] = time.time() - start_time
+            # Convert URL to PDF
+            success = await self.browser_manager.convert_url_to_pdf(
+                content_url,
+                str(pdf_filename)
+            )
 
-            # Print final summary
-            self.print_final_summary()
+            if not success:
+                print(f"❌ Failed to convert to PDF")
+                self.stats['failed_conversions'] += 1
+                return False
+
+            # Update file size stats
+            file_info = get_file_info(pdf_filename)
+            if file_info and 'size' in file_info:
+                self.stats['total_file_size'] += file_info['size']
+                print(f"📄 PDF size: {file_info['size_formatted']}")
+
+            # Upload to ReMarkable if enabled
+            remarkable_uploaded = False
+            if self.stats['remarkable_enabled'] and self.remarkable_manager.is_available():
+                upload_success = self.remarkable_manager.upload_pdf(pdf_filename)
+                if upload_success:
+                    self.stats['remarkable_uploads'] += 1
+                    remarkable_uploaded = True
+                else:
+                    self.stats['remarkable_failures'] += 1
+                    print(f"⚠️ Failed to upload to ReMarkable")
+
+            # Mark as processed in tracking (only for successful conversions)
+            tracking_success = self.tracking_manager.mark_email_processed(
+                content_data,
+                str(pdf_filename),
+                remarkable_uploaded,
+                success=True  # Only mark as processed if conversion was successful
+            )
+
+            if tracking_success:
+                self.tracking_manager.save_tracking_data()
+
+            print(f"✅ Successfully processed: {pdf_filename.name}")
+            self.stats['successful_conversions'] += 1
 
             return True
 
         except Exception as e:
-            print(f"❌ Error during processing: {e}")
-            print(f"🔧 Debug info: {traceback.format_exc()}")
+            print(f"❌ Error processing {item_type}: {e}")
+            self.stats['failed_conversions'] += 1
             return False
 
-        finally:
-            # Always close browser session
-            await self.browser_manager.close_browser_session()
+    # Keep the old method name for backwards compatibility
+    async def process_emails(self, max_emails=None, force_reprocess=None, upload_to_remarkable=None):
+        """Legacy method for email processing (backwards compatibility)"""
+        if self.processing_mode != 'email':
+            print("⚠️ process_emails() called but processing mode is not 'email'")
+            print(f"Current mode: {self.processing_mode}")
+
+        return await self.process_content(max_emails, force_reprocess, upload_to_remarkable)
 
     def print_final_summary(self):
         """Print final processing summary"""
-        print(f"\n🎉 Processing complete!")
+        mode_name = "Email" if self.processing_mode == 'email' else "Website"
+        print(f"\n🎉 {mode_name} processing complete!")
 
         # Generate and print summary report
         report = create_summary_report(self.stats)
@@ -321,12 +570,19 @@ async def main():
         # Print startup banner
         converter.print_startup_banner()
 
-        # Process emails with default settings
-        await converter.process_emails(
-            max_emails=5,  # Number of emails to process
-            force_reprocess=False,  # Set to True to reprocess already converted emails
-            upload_to_remarkable=True  # Set to False to disable ReMarkable upload
-        )
+        # Process content based on mode from .env file
+        if converter.processing_mode == 'email':
+            await converter.process_content(
+                max_items=5,  # Number of emails to process
+                force_reprocess=False,  # Set to True to reprocess already converted emails
+                upload_to_remarkable=True  # Set to False to disable ReMarkable upload
+            )
+        else:  # website mode
+            await converter.process_content(
+                max_items=10,  # Number of articles to process
+                force_reprocess=False,  # Set to True to reprocess already converted articles
+                upload_to_remarkable=True  # Set to False to disable ReMarkable upload
+            )
 
     except KeyboardInterrupt:
         print("\n👋 Process interrupted by user")
@@ -341,22 +597,24 @@ if __name__ == "__main__":
     print("=" * 65)
     print("⚙️  Configuration:")
     print("   📁 .env file: Customize settings in .env file")
-    print("   📧 max_emails: Set MAX_EMAILS in .env or modify main()")
-    print("   🔄 force_reprocess: Set FORCE_REPROCESS=true in .env")
-    print("   📱 upload_to_remarkable: Set UPLOAD_TO_REMARKABLE=false to disable")
+    print("   🔄 PROCESSING_MODE: Set to 'email' or 'website' in .env")
+    print("   📧 Email mode: Process emails from Gmail")
+    print("   🌐 Website mode: Scan thedispatch.com for articles")
     print("\n🔧 Environment setup:")
     print("   1. Copy .env.example to .env and customize")
-    print("   2. Download Google OAuth credentials as 'credentials.json'")
-    print("   3. Install and authenticate rmapi (for ReMarkable upload)")
+    print("   2. Set PROCESSING_MODE=email or PROCESSING_MODE=website")
+    print("   3. For email mode: Download Google OAuth credentials")
     print("   4. Install dependencies: pip install -r requirements.txt")
     print("   5. Install Playwright browsers: playwright install")
+    print("   6. Setup rmapi for ReMarkable (optional)")
     print("\n💡 Configuration options in .env:")
-    print("   MAX_EMAILS=10                    # Number of emails to process")
-    print("   FORCE_REPROCESS=true             # Reprocess already converted emails")
+    print("   PROCESSING_MODE=website          # Switch to website scanning")
+    print("   MAX_EMAILS=10                    # Number of emails (email mode)")
+    print("   MAX_ARTICLES=15                  # Number of articles (website mode)")
+    print("   FORCE_REPROCESS=true             # Reprocess already converted content")
     print("   UPLOAD_TO_REMARKABLE=false       # Disable ReMarkable upload")
-    print("   BROWSER_HEADLESS=true            # Run browser in background")
-    print("   OUTPUT_DIR=my_pdfs               # Custom output directory")
-    print("   RMAPI_PATH=/custom/path/rmapi    # Custom rmapi path")
+    print("   WEBSITE_SECTIONS=newsletters,morning-dispatch  # Sections to scan")
+    print("   SKIP_KEYWORDS=podcast,video      # Keywords to skip in titles")
     print("\nPress ENTER to start...")
     # input()
 

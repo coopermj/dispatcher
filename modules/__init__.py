@@ -8,6 +8,7 @@ from .email_handler import EmailHandler
 from .browser_manager import BrowserManager
 from .tracking import TrackingManager
 from .remarkable import ReMarkableManager
+from .website_scanner import WebsiteScanner
 from .utils import *
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     'BrowserManager',
     'TrackingManager',
     'ReMarkableManager',
+    'WebsiteScanner',
     'sanitize_filename',
     'create_timestamp',
     'setup_logging'

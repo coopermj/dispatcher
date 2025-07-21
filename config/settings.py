@@ -78,6 +78,16 @@ GOOGLE_SCOPES = [
     'openid'
 ]
 
+# Processing mode settings
+PROCESSING_MODE = os.getenv('PROCESSING_MODE', 'email').lower()  # 'email' or 'website'
+
+# Website scanning settings
+MAX_ARTICLES = get_int_env('MAX_ARTICLES', 10)
+ARTICLE_AGE_LIMIT_DAYS = get_int_env('ARTICLE_AGE_LIMIT_DAYS', 30)
+WEBSITE_SECTIONS = [s.strip() for s in
+                    os.getenv('WEBSITE_SECTIONS', 'newsletters,morning-dispatch,afternoon-dispatch').split(',')]
+SKIP_KEYWORDS = [k.strip().lower() for k in os.getenv('SKIP_KEYWORDS', 'podcast,video,live-stream').split(',')]
+
 # Email search settings
 GMAIL_SEARCH_QUERY = os.getenv('GMAIL_SEARCH_QUERY', 'from:@thedispatch.com')
 DEFAULT_MAX_EMAILS = get_int_env('MAX_EMAILS', 5)
