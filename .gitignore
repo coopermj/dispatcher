@@ -1,0 +1,110 @@
+# Dispatch PDF Converter - Git Ignore File
+
+# Environment and configuration files
+.env
+.env.local
+.env.*.local
+
+# Google OAuth credentials and tokens
+credentials.json
+token.pickle
+dispatch_cookies.json
+
+# Tracking database
+dispatch_tracking.json
+
+# Generated PDFs and output
+dispatch_pdfs/
+dispatch_persistent_pdfs/
+*.pdf
+
+# Debug files
+debug_html/
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# ReMarkable related (keep rmapi binary location private)
+rmapi
+rmapi.exe

@@ -6,7 +6,7 @@ Scans thedispatch.com for articles to convert to PDF
 
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
@@ -273,7 +273,7 @@ class WebsiteScanner:
     def filter_articles(self, articles):
         """Filter articles by age and keywords"""
         filtered = []
-        cutoff_date = datetime.now() - timedelta(days=ARTICLE_AGE_LIMIT_DAYS)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=ARTICLE_AGE_LIMIT_DAYS)
 
         for article in articles:
             # Skip if title contains skip keywords
@@ -284,9 +284,14 @@ class WebsiteScanner:
 
             # Skip if too old (if we have a date)
             article_date = article.get('date')
-            if article_date and article_date < cutoff_date:
-                print(f"⏭️  Skipping (too old): {article['title'][:50]}...")
-                continue
+            if article_date:
+                if article_date.tzinfo is None:
+                    article_date = article_date.replace(tzinfo=timezone.utc)
+                else:
+                    article_date = article_date.astimezone(timezone.utc)
+                if article_date < cutoff_date:
+                    print(f"⏭️  Skipping (too old): {article['title'][:50]}...")
+                    continue
 
             # Skip obvious non-article URLs
             url_lower = article['url'].lower()

@@ -5,6 +5,7 @@ Browser manager for Playwright automation and PDF generation
 
 import asyncio
 import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -26,7 +27,7 @@ class BrowserManager:
         self.p = None
     
     async def start_browser_session(self):
-        """Start persistent browser session"""
+        """Start persistent browser session - exact copy from tester.py"""
         try:
             from playwright.async_api import async_playwright
 
@@ -66,20 +67,17 @@ class BrowserManager:
             print(f"⚠️ Error closing browser: {e}")
 
     async def save_html_snapshot(self, filename_suffix, url=""):
-        """Save current page HTML for debugging"""
+        """Save current page HTML for debugging - exact copy from tester.py"""
         try:
-            if not self.page:
-                print("⚠️ No page available for HTML snapshot")
-                return None
-                
             content = await self.page.content()
 
             # Create debug directory if it doesn't exist
-            DEBUG_DIR.mkdir(exist_ok=True)
+            debug_dir = Path("debug_html")
+            debug_dir.mkdir(exist_ok=True)
 
             # Create filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = DEBUG_DIR / f"page_{timestamp}_{filename_suffix}.html"
+            filename = f"debug_html/page_{timestamp}_{filename_suffix}.html"
 
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -95,45 +93,54 @@ class BrowserManager:
             return None
 
     async def remove_header_elements(self):
-        """Remove header elements and navigation/accessibility elements specifically for The Dispatch"""
+        """Remove header elements and navigation/accessibility elements - exact copy from tester.py"""
         try:
             print("🧹 Removing The Dispatch header and navigation elements...")
 
-            # Enhanced JavaScript to remove The Dispatch specific elements
-            header_removal_script = f"""
-            (() => {{
+            # Enhanced JavaScript to remove The Dispatch specific elements (exact copy from tester.py)
+            header_removal_script = """
+            (() => {
                 // Remove by tag (header, nav, footer, aside)
-                ['header','nav','footer','aside'].forEach(tag => {{
+                ['header','nav','footer','aside'].forEach(tag => {
                     document.querySelectorAll(tag).forEach(e => e.remove());
-                }});
+                });
 
-                // Remove elements by class or id keywords
-                const keywords = {HEADER_REMOVAL_KEYWORDS};
-                keywords.forEach(word => {{
-                    document.querySelectorAll(`[class*="${{word}}"], [id*="${{word}}"]`).forEach(e => e.remove());
-                }});
+                // Remove elements by class or id (but not 'fixed' or 'sticky')
+                const keywords = [
+                    'navbar','banner','paywall','newsletter','comment','breadcrumb',
+                    'subscribe','sidebar','popup','ad','site-footer','site-info','z-scroll-to','primary-button'
+                ];
+                keywords.forEach(word => {
+                    document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => e.remove());
+                });
 
                 // Remove overlays or popups by computed style (only if width/height covers most of viewport)
-                document.querySelectorAll('*').forEach(e => {{
+                document.querySelectorAll('*').forEach(e => {
                     const s = window.getComputedStyle(e);
                     if ((s.position === 'fixed' || s.position === 'sticky') &&
                         e.offsetHeight > window.innerHeight * 0.5 &&
-                        e.offsetWidth > window.innerWidth * 0.5) {{
+                        e.offsetWidth > window.innerWidth * 0.5) {
                         e.remove();
-                    }}
-                }});
+                    }
+                });
 
-                // Restore body/main/article margins
+                // Restore body/main/article margins if you want, but DO NOT remove <style> or <link>!
                 const main = document.querySelector('main, article, [role=main]');
-                if (main) {{
+                if (main) {
                     main.style.marginTop = '0px';
                     main.style.paddingTop = '0px';
-                }}
-            }})();
+                }
+            })();
             """
 
+            # Debug: Print the exact JavaScript being executed
+            print("🔧 Executing JavaScript:")
+            print("=" * 40)
+            print(header_removal_script[:200] + "..." + header_removal_script[-200:])
+            print("=" * 40)
+
             # Execute the enhanced script
-            await self.page.evaluate(header_removal_script)
+            result = await self.page.evaluate(header_removal_script)
 
             # Wait for DOM changes and reflow
             await asyncio.sleep(2)
@@ -148,6 +155,7 @@ class BrowserManager:
 
         except Exception as e:
             print(f"⚠️ Error removing header elements: {e}")
+            print(f"🔧 Debug info: {traceback.format_exc()}")
             # Continue anyway - this shouldn't stop PDF generation
             return True
 
@@ -214,11 +222,26 @@ class BrowserManager:
             return False
 
     async def convert_url_to_pdf(self, url, output_filename):
-        """Convert URL to PDF using persistent session with header removal"""
+        """Convert URL to PDF using persistent session with header removal - exact copy from tester.py"""
         try:
-            # Navigate to URL
-            if not await self.navigate_to_url(url):
-                return False
+            print(f"🔗 Navigating to: {url}")
+
+            # Navigate to the newsletter URL
+            await self.page.goto(url, timeout=30000)
+            await asyncio.sleep(3)
+
+            # Check page content
+            title = await self.page.title()
+            print(f"📄 Page title: {title}")
+
+            # Wait for content to load
+            try:
+                await self.page.wait_for_selector('article, .article, .post, .content, main', timeout=10000)
+                print("✅ Content loaded")
+            except:
+                print("⚠️ Standard content selectors not found, but continuing...")
+
+            await asyncio.sleep(2)
 
             # Save HTML before any modifications
             await self.save_html_snapshot("before_cleanup", url)
@@ -230,7 +253,22 @@ class BrowserManager:
             await self.save_html_snapshot("after_cleanup", url)
 
             # Generate PDF
-            return await self.generate_pdf(output_filename)
+            print(f"📄 Generating PDF: {output_filename}")
+            await self.page.pdf(
+                path=output_filename,
+                format='A4',
+                margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
+                print_background=True,
+                prefer_css_page_size=False
+            )
+
+            # Verify PDF was created
+            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 5000:
+                print(f"✅ PDF created successfully: {output_filename}")
+                return True
+            else:
+                print("❌ PDF creation failed or file too small")
+                return False
 
         except Exception as e:
             print(f"❌ Error converting URL to PDF: {e}")

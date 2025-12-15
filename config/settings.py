@@ -79,7 +79,7 @@ GOOGLE_SCOPES = [
 ]
 
 # Processing mode settings
-PROCESSING_MODE = os.getenv('PROCESSING_MODE', 'email').lower()  # 'email' or 'website'
+PROCESSING_MODE = os.getenv('PROCESSING_MODE', 'website').lower()  # 'email' or 'website'
 
 # Website scanning settings
 MAX_ARTICLES = get_int_env('MAX_ARTICLES', 10)
@@ -87,6 +87,17 @@ ARTICLE_AGE_LIMIT_DAYS = get_int_env('ARTICLE_AGE_LIMIT_DAYS', 30)
 WEBSITE_SECTIONS = [s.strip() for s in
                     os.getenv('WEBSITE_SECTIONS', 'newsletters,morning-dispatch,afternoon-dispatch').split(',')]
 SKIP_KEYWORDS = [k.strip().lower() for k in os.getenv('SKIP_KEYWORDS', 'podcast,video,live-stream').split(',')]
+
+# Enhanced PDF generation settings
+FOLLOW_ARTICLE_LINKS = get_bool_env('FOLLOW_ARTICLE_LINKS', False)
+MAX_LINKED_PAGES = get_int_env('MAX_LINKED_PAGES', 10)
+LINK_FOLLOW_DEPTH = get_int_env('LINK_FOLLOW_DEPTH', 1)
+ALLOWED_LINK_DOMAINS = [d.strip() for d in os.getenv('ALLOWED_LINK_DOMAINS', '').split(',') if d.strip()]
+SKIP_LINK_PATTERNS = [p.strip() for p in os.getenv('SKIP_LINK_PATTERNS',
+                                                   'twitter.com,facebook.com,youtube.com,instagram.com,linkedin.com,mailto:').split(
+    ',') if p.strip()]
+LINKED_PAGE_TIMEOUT = get_int_env('LINKED_PAGE_TIMEOUT', 15)
+REPLACE_LINKS_WITH_PDF_REFS = get_bool_env('REPLACE_LINKS_WITH_PDF_REFS', True)
 
 # Email search settings
 GMAIL_SEARCH_QUERY = os.getenv('GMAIL_SEARCH_QUERY', 'from:@thedispatch.com')

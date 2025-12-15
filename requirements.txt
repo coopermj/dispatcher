@@ -11,6 +11,9 @@ html2text
 # Browser automation
 playwright
 
+# PDF processing
+PyPDF2
+
 # Utility dependencies
 pathlib2
 python-dotenv

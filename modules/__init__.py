@@ -9,6 +9,7 @@ from .browser_manager import BrowserManager
 from .tracking import TrackingManager
 from .remarkable import ReMarkableManager
 from .website_scanner import WebsiteScanner
+from .link_processor import LinkProcessor
 from .utils import *
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     'TrackingManager',
     'ReMarkableManager',
     'WebsiteScanner',
+    'LinkProcessor',
     'sanitize_filename',
     'create_timestamp',
     'setup_logging'
