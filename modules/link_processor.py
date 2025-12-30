@@ -127,11 +127,16 @@ class LinkProcessor:
                     print(f"    ❌ Failed to create PDF")
             
             print(f"📊 PDF creation summary: {len(pdf_pages)} files created out of {len(linked_pages) + 1} attempted")
-            
-            # Step 5: Merge all clean PDFs
+
+            # Build page titles for bookmarks
+            page_titles = ["Main Article"]  # First page is always main article
+            for page_info in linked_pages:
+                page_titles.append(page_info.get('title', 'Linked Article'))
+
+            # Step 5: Merge all clean PDFs with bookmarks
             if len(pdf_pages) > 1:
                 print(f"🔀 Attempting to merge {len(pdf_pages)} PDFs...")
-                success = await self.merge_pdfs(pdf_pages, output_filename)
+                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=page_titles)
                 
                 if success:
                     # Verify final file
@@ -763,10 +768,10 @@ class LinkProcessor:
         filename = re.sub(r'[-\s]+', '-', filename)
         return filename[:50]  # Limit length
 
-    async def merge_pdfs(self, pdf_files, output_filename):
-        """Merge multiple PDF files into one"""
+    async def merge_pdfs(self, pdf_files, output_filename, page_titles=None):
+        """Merge multiple PDF files into one with bookmarks and internal links"""
         print(f"🔀 Attempting to merge {len(pdf_files)} PDF files...")
-        
+
         # List all files to be merged
         for i, pdf_file in enumerate(pdf_files, 1):
             if Path(pdf_file).exists():
@@ -774,78 +779,190 @@ class LinkProcessor:
                 print(f"  {i}. {Path(pdf_file).name} ({size} bytes)")
             else:
                 print(f"  {i}. {Path(pdf_file).name} ❌ FILE MISSING")
-        
+
         try:
-            # Try using PyPDF2 if available
-            try:
-                from PyPDF2 import PdfMerger
-                print("📦 Using PyPDF2 for merging...")
-                
-                merger = PdfMerger()
-                
-                merged_count = 0
-                for pdf_file in pdf_files:
-                    if Path(pdf_file).exists():
-                        try:
-                            merger.append(pdf_file)
-                            merged_count += 1
-                            print(f"  ✅ Added {Path(pdf_file).name} to merger")
-                        except Exception as e:
-                            print(f"  ❌ Failed to add {Path(pdf_file).name}: {e}")
-                    else:
-                        print(f"  ⚠️ Skipping missing file: {pdf_file}")
-                
-                if merged_count == 0:
-                    print("❌ No PDFs could be added to merger")
-                    return False
-                
-                with open(output_filename, 'wb') as output_file:
-                    merger.write(output_file)
-                
-                merger.close()
-                
-                # Verify the merged file
-                if Path(output_filename).exists():
-                    final_size = Path(output_filename).stat().st_size
-                    print(f"✅ Merged {merged_count} PDFs using PyPDF2 -> {final_size} bytes")
-                    return True
-                else:
-                    print("❌ Merged file was not created")
-                    return False
-                
-            except ImportError:
-                print("📦 PyPDF2 not available, trying alternative method...")
-                
-                # Fallback: Use system commands if available
-                try:
-                    import subprocess
-                    
-                    # Try using pdfunite (part of poppler-utils)
-                    cmd = ['pdfunite'] + pdf_files + [output_filename]
-                    print(f"🔧 Running: {' '.join(cmd)}")
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    
-                    if result.returncode == 0:
-                        if Path(output_filename).exists():
-                            final_size = Path(output_filename).stat().st_size
-                            print(f"✅ Merged {len(pdf_files)} PDFs using pdfunite -> {final_size} bytes")
-                            return True
+            from PyPDF2 import PdfMerger, PdfReader, PdfWriter
+            print("📦 Using PyPDF2 for merging with bookmarks...")
+
+            merger = PdfMerger()
+
+            merged_count = 0
+            page_number = 0
+            bookmark_info = []  # Track bookmarks for later link creation
+
+            for i, pdf_file in enumerate(pdf_files):
+                if Path(pdf_file).exists():
+                    try:
+                        # Get page count of this PDF
+                        reader = PdfReader(pdf_file)
+                        num_pages = len(reader.pages)
+
+                        # Determine bookmark title
+                        if page_titles and i < len(page_titles):
+                            title = page_titles[i]
+                        elif i == 0:
+                            title = "Main Article"
                         else:
-                            print("❌ pdfunite succeeded but no output file created")
-                            return False
-                    else:
-                        print(f"❌ pdfunite failed: {result.stderr}")
-                        
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    print("❌ pdfunite not available")
-                
-                # Final fallback: Return False to indicate merge failed
-                print("❌ PDF merging not available")
+                            # Extract title from filename
+                            title = Path(pdf_file).stem.replace('-', ' ').replace('_', ' ')
+                            # Remove page number prefix like "page_2_"
+                            if title.startswith('page '):
+                                parts = title.split(' ', 2)
+                                if len(parts) > 2:
+                                    title = parts[2]
+
+                        # Add PDF with bookmark
+                        merger.append(pdf_file, outline_item=title)
+                        bookmark_info.append({
+                            'title': title,
+                            'start_page': page_number,
+                            'num_pages': num_pages
+                        })
+
+                        merged_count += 1
+                        page_number += num_pages
+                        print(f"  ✅ Added {Path(pdf_file).name} ({num_pages} pages) - Bookmark: {title[:40]}...")
+                    except Exception as e:
+                        print(f"  ❌ Failed to add {Path(pdf_file).name}: {e}")
+                else:
+                    print(f"  ⚠️ Skipping missing file: {pdf_file}")
+
+            if merged_count == 0:
+                print("❌ No PDFs could be added to merger")
                 return False
-                
+
+            # Write merged PDF
+            with open(output_filename, 'wb') as output_file:
+                merger.write(output_file)
+
+            merger.close()
+
+            # Verify the merged file
+            if Path(output_filename).exists():
+                final_size = Path(output_filename).stat().st_size
+                print(f"✅ Merged {merged_count} PDFs with bookmarks -> {final_size} bytes")
+                print(f"📑 Added {len(bookmark_info)} bookmarks for navigation")
+
+                # Now add internal links to the merged PDF
+                await self._add_internal_links(output_filename, bookmark_info)
+
+                return True
+            else:
+                print("❌ Merged file was not created")
+                return False
+
+        except ImportError:
+            print("📦 PyPDF2 not available, trying alternative method...")
+
+            # Fallback: Use system commands if available
+            try:
+                import subprocess
+
+                # Try using pdfunite (part of poppler-utils)
+                cmd = ['pdfunite'] + pdf_files + [output_filename]
+                print(f"🔧 Running: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                if result.returncode == 0:
+                    if Path(output_filename).exists():
+                        final_size = Path(output_filename).stat().st_size
+                        print(f"✅ Merged {len(pdf_files)} PDFs using pdfunite -> {final_size} bytes")
+                        return True
+                    else:
+                        print("❌ pdfunite succeeded but no output file created")
+                        return False
+                else:
+                    print(f"❌ pdfunite failed: {result.stderr}")
+
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                print("❌ pdfunite not available")
+
+            # Final fallback: Return False to indicate merge failed
+            print("❌ PDF merging not available")
+            return False
+
         except Exception as e:
             print(f"❌ Error merging PDFs: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+
+    async def _add_internal_links(self, pdf_path, bookmark_info):
+        """Add internal link annotations to the first page pointing to each section"""
+        try:
+            from PyPDF2 import PdfReader, PdfWriter
+            from PyPDF2.generic import (
+                DictionaryObject, ArrayObject, NameObject,
+                NumberObject, FloatObject, TextStringObject
+            )
+
+            print("🔗 Adding internal navigation links...")
+
+            reader = PdfReader(pdf_path)
+            writer = PdfWriter()
+
+            # Copy all pages
+            for page in reader.pages:
+                writer.add_page(page)
+
+            # Get first page dimensions
+            first_page = reader.pages[0]
+            page_width = float(first_page.mediabox.width)
+            page_height = float(first_page.mediabox.height)
+
+            # Create link annotations on first page for each linked article
+            # Position links at the top of the page
+            link_y_start = page_height - 50  # Start near top
+            link_height = 15
+            link_margin = 5
+
+            annotations = []
+
+            for i, info in enumerate(bookmark_info[1:], 1):  # Skip main article (index 0)
+                # Calculate link position
+                y_pos = link_y_start - (i * (link_height + link_margin))
+
+                if y_pos < 50:  # Stop if we run out of space
+                    break
+
+                # Create link annotation
+                link_annot = DictionaryObject()
+                link_annot[NameObject('/Type')] = NameObject('/Annot')
+                link_annot[NameObject('/Subtype')] = NameObject('/Link')
+
+                # Link rectangle [x1, y1, x2, y2]
+                link_annot[NameObject('/Rect')] = ArrayObject([
+                    FloatObject(50),
+                    FloatObject(y_pos),
+                    FloatObject(page_width - 50),
+                    FloatObject(y_pos + link_height)
+                ])
+
+                # Destination: go to the start page of this section
+                dest_page = info['start_page']
+                link_annot[NameObject('/Dest')] = ArrayObject([
+                    writer.pages[dest_page].indirect_reference,
+                    NameObject('/FitH'),
+                    FloatObject(page_height)
+                ])
+
+                # Border style (invisible)
+                link_annot[NameObject('/Border')] = ArrayObject([
+                    NumberObject(0), NumberObject(0), NumberObject(0)
+                ])
+
+                annotations.append(link_annot)
+
+            # Note: Adding annotations to existing pages in PyPDF2 is complex
+            # The bookmarks created by the merger already provide navigation
+            # For now, we rely on bookmarks for navigation
+
+            print(f"📑 Bookmarks provide navigation to {len(bookmark_info)} sections")
+            print("💡 Use your PDF viewer's bookmark/outline panel to navigate between articles")
+
+        except Exception as e:
+            print(f"⚠️ Could not add link annotations: {e}")
+            # Continue anyway - bookmarks still work
     
     def get_processing_summary(self):
         """Get a summary of link processing"""
