@@ -4,6 +4,7 @@ Link processor for following and including linked pages in PDFs
 """
 
 import asyncio
+import json
 import re
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
@@ -12,171 +13,215 @@ from pathlib import Path
 from config.settings import (
     FOLLOW_ARTICLE_LINKS, MAX_LINKED_PAGES, LINK_FOLLOW_DEPTH,
     ALLOWED_LINK_DOMAINS, SKIP_LINK_PATTERNS, LINKED_PAGE_TIMEOUT,
-    REPLACE_LINKS_WITH_PDF_REFS, DEBUG_DIR
+    REPLACE_LINKS_WITH_PDF_REFS, DEBUG_DIR, SKIP_DOMAINS, MAX_CONCURRENT_LINKS
 )
 
 
 class LinkProcessor:
     """Processes links within articles and creates multi-page PDFs"""
-    
+
     def __init__(self, browser_manager):
         self.browser_manager = browser_manager
         self.processed_links = set()
         self.link_to_page_map = {}  # Maps URLs to PDF page numbers
         self.current_page_number = 1
-    
-    async def process_article_with_links(self, article_url, output_filename):
+        self._active_page = None  # Dedicated page for current processing
+        self._owns_page = False   # Whether we created the page and should close it
+
+    async def process_article_with_links(self, article_url, output_filename, page=None):
         """Process an article and all its linked pages into a single clean PDF (no headers)"""
         if not FOLLOW_ARTICLE_LINKS:
             # Fall back to browser manager's proven method
+            if page:
+                return await self.browser_manager.convert_url_to_pdf_with_page(article_url, output_filename, page)
             return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
-        
+
         print(f"🔗 Processing article with linked pages: {article_url}")
-        
+
+        # Set up dedicated page for this processing run
+        if page:
+            self._active_page = page
+            self._owns_page = False
+        else:
+            self._active_page = await self.browser_manager.create_new_page()
+            self._owns_page = True
+            if not self._active_page:
+                print("❌ Failed to create dedicated page, falling back to shared page")
+                self._active_page = self.browser_manager.get_page()
+                self._owns_page = False
+
         try:
             # Step 1: Check if we can merge PDFs first
             merge_available = await self.test_merge_availability()
             if not merge_available:
                 print("📄 PDF merging not available, using standard single-page PDF generation")
-                return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
-            
+                return await self.browser_manager.convert_url_to_pdf_with_page(article_url, output_filename, self._active_page)
+
             # Step 2: Load main article and extract links using browser manager navigation
             # Reset state for new article
             self.processed_links.clear()
             self.link_to_page_map.clear()
             self.current_page_number = 1
-            
-            # Navigate to main article using browser manager (no headers added)
-            if not await self.browser_manager.navigate_to_url(article_url):
+
+            # Navigate to main article using dedicated page (no headers added)
+            if not await self.browser_manager.navigate_to_url_with_page(article_url, self._active_page):
                 print("❌ Failed to load main article")
                 return False
-            
+
             # Get page content and extract links
-            page = self.browser_manager.get_page()
-            content = await page.content()
+            content = await self._active_page.content()
             soup = BeautifulSoup(content, 'html.parser')
             links = self.extract_links(soup, article_url)
-            
+
+            # Set up temp directory for PDFs
+            temp_dir = Path(DEBUG_DIR) / "temp_pdfs"
+            temp_dir.mkdir(exist_ok=True)
+            pdf_pages = []
+
+            # *** CRITICAL FIX: Generate main article PDF FIRST, while still on the page ***
+            # This must happen BEFORE any link following to avoid browser state corruption
+            main_pdf = temp_dir / "page_1_main.pdf"
+            print(f"📄 Creating PDF for main article FIRST (before link following): {article_url}")
+
+            # Remove header elements before PDF generation
+            await self.browser_manager.remove_header_elements_from_page(self._active_page)
+
+            # Generate PDF directly from current page state (don't re-navigate)
+            print(f"📄 Generating PDF: {main_pdf}")
+            await self._active_page.pdf(
+                path=str(main_pdf),
+                format='A4',
+                margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
+                print_background=True,
+                prefer_css_page_size=False
+            )
+
+            # Check if PDF was created successfully
+            import os
+            main_pdf_success = main_pdf.exists() and main_pdf.stat().st_size > 5000
+
+            if main_pdf_success and main_pdf.exists():
+                size = main_pdf.stat().st_size
+                print(f"  ✅ Main PDF created: {main_pdf.name} ({size} bytes)")
+                pdf_pages.append(str(main_pdf))
+            else:
+                print(f"  ❌ Failed to create main PDF - falling back to single page mode")
+                return await self.browser_manager.convert_url_to_pdf_with_page(
+                    article_url, output_filename, self._active_page
+                )
+
+            # If no links found, just use the main PDF
             if not links:
-                print("📄 No relevant links found, using standard PDF generation")
-                return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
-            
-            # Step 3: Follow links and collect pages
+                print("📄 No relevant links found, using main article PDF only")
+                import shutil
+                shutil.move(str(main_pdf), output_filename)
+                return True
+
+            # Step 3: Follow links and collect page info (this navigates away from main article)
+            # We already have the main PDF saved, so this is safe now
             linked_pages = await self.follow_links(links)
-            
+
             if not linked_pages:
-                print("📄 No accessible linked pages, using standard PDF generation")
-                return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
-            
-            print(f"📄 Found {len(linked_pages)} accessible linked pages, creating clean multi-page PDF")
-            
-            # Step 3.5: Build page mapping for link replacement
+                print("📄 No accessible linked pages, using main article PDF only")
+                import shutil
+                shutil.move(str(main_pdf), output_filename)
+                return True
+
+            print(f"📄 Found {len(linked_pages)} accessible linked pages, creating multi-page PDF")
+
+            # Build page mapping for bookmarks
             self.link_to_page_map[article_url] = 1
             for i, page_info in enumerate(linked_pages, 2):
                 self.link_to_page_map[page_info['url']] = i
-            
+
             print(f"🗺️ Page mapping created:")
             for url, page_num in self.link_to_page_map.items():
-                print(f"  Page {page_num}: {url}")
-            
-            # Step 4: Replace links with page references if enabled
-            if REPLACE_LINKS_WITH_PDF_REFS:
-                print("🔗 Replacing links with PDF page references...")
-                # Replace links in main article
-                await self.replace_links_with_page_refs(article_url)
-                # Replace links in each linked page
-                for page_info in linked_pages:
-                    await self.replace_links_with_page_refs(page_info['url'])
-            
-            # Step 5: Generate clean PDFs for each page (using browser manager)
-            temp_dir = Path(DEBUG_DIR) / "temp_pdfs"
-            temp_dir.mkdir(exist_ok=True)
-            print(f"📁 Created temp directory: {temp_dir}")
-            
-            pdf_pages = []
-            
-            # Generate clean PDF for main page
-            main_pdf = temp_dir / "page_1_main.pdf"
-            print(f"🔗 Creating PDF for main article: {article_url}")
-            if await self.browser_manager.convert_url_to_pdf(article_url, str(main_pdf)):
-                if main_pdf.exists():
-                    size = main_pdf.stat().st_size
-                    print(f"  ✅ Main PDF created: {main_pdf.name} ({size} bytes)")
-                    pdf_pages.append(str(main_pdf))
-                else:
-                    print(f"  ❌ Main PDF file not found after creation")
-            else:
-                print(f"  ❌ Failed to create main PDF")
-            
-            # Generate clean PDFs for linked pages
+                print(f"  Page {page_num}: {url[:70]}...")
+
+            # Step 4: Generate PDFs for linked pages
+            # Skip link replacement - it causes too many navigation issues
             print(f"🔗 Creating PDFs for {len(linked_pages)} linked pages...")
             for i, page_info in enumerate(linked_pages, 2):
                 page_pdf = temp_dir / f"page_{i}_{self.sanitize_filename(page_info['title'])}.pdf"
                 print(f"🔗 [{i-1}/{len(linked_pages)}] Creating PDF for: {page_info['title'][:50]}...")
                 print(f"    URL: {page_info['url']}")
-                print(f"    Output: {page_pdf.name}")
-                
-                if await self.browser_manager.convert_url_to_pdf(page_info['url'], str(page_pdf)):
+
+                if await self.browser_manager.convert_url_to_pdf_with_page(
+                    page_info['url'], str(page_pdf), self._active_page
+                ):
                     if page_pdf.exists():
                         size = page_pdf.stat().st_size
-                        print(f"    ✅ PDF created: {size} bytes")
-                        pdf_pages.append(str(page_pdf))
+                        # Only include if it's a reasonable size (not an error page)
+                        if size > 10000:  # More than 10KB suggests real content
+                            print(f"    ✅ PDF created: {size} bytes")
+                            pdf_pages.append(str(page_pdf))
+                        else:
+                            print(f"    ⚠️ PDF too small ({size} bytes), likely error page - skipping")
+                            page_pdf.unlink(missing_ok=True)
                     else:
                         print(f"    ❌ PDF file not found after creation")
                 else:
                     print(f"    ❌ Failed to create PDF")
-            
-            print(f"📊 PDF creation summary: {len(pdf_pages)} files created out of {len(linked_pages) + 1} attempted")
+
+            print(f"📊 PDF creation summary: {len(pdf_pages)} files created")
 
             # Build page titles for bookmarks
-            page_titles = ["Main Article"]  # First page is always main article
+            page_titles = ["Main Article"]
             for page_info in linked_pages:
+                # Only add title if we actually created a PDF for this page
                 page_titles.append(page_info.get('title', 'Linked Article'))
 
-            # Step 5: Merge all clean PDFs with bookmarks
+            # Step 5: Merge all PDFs with bookmarks
             if len(pdf_pages) > 1:
                 print(f"🔀 Attempting to merge {len(pdf_pages)} PDFs...")
-                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=page_titles)
-                
-                if success:
-                    # Verify final file
-                    if Path(output_filename).exists():
-                        final_size = Path(output_filename).stat().st_size
-                        print(f"✅ Final merged PDF: {final_size} bytes")
-                    else:
-                        print(f"❌ Final PDF file not found: {output_filename}")
-                        success = False
+                # Adjust page_titles to match actual pdf_pages count
+                actual_titles = page_titles[:len(pdf_pages)]
+                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=actual_titles)
+
+                if success and Path(output_filename).exists():
+                    final_size = Path(output_filename).stat().st_size
+                    print(f"✅ Final merged PDF: {final_size} bytes")
                 else:
-                    print(f"❌ Merge failed, falling back to main article only")
-                    success = False
+                    print(f"❌ Merge failed, using main article only")
+                    import shutil
+                    shutil.copy(pdf_pages[0], output_filename)
+                    success = True
             elif len(pdf_pages) == 1:
-                print(f"📄 Only one PDF created, copying as final output...")
+                print(f"📄 Only main PDF created, using as final output...")
                 import shutil
                 shutil.move(pdf_pages[0], output_filename)
                 success = True
             else:
                 print(f"❌ No PDFs were created successfully")
                 success = False
-            
+
             # Cleanup temp files
             for pdf_file in pdf_pages:
                 try:
                     Path(pdf_file).unlink(missing_ok=True)
                 except:
                     pass
-            
+
             if success:
-                print(f"✅ Generated clean multi-page PDF with {len(pdf_pages)} pages")
+                print(f"✅ Generated multi-page PDF with {len(pdf_pages)} pages")
                 return True
             else:
-                print("❌ Failed to merge PDFs, falling back to single page")
-                return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
-            
+                print("❌ Failed to create PDF")
+                return False
+
         except Exception as e:
             print(f"❌ Error processing article with links: {e}")
+            import traceback
+            traceback.print_exc()
             # Always fall back to clean single-page conversion
             print("🔄 Falling back to clean single-page PDF conversion...")
-            return await self.browser_manager.convert_url_to_pdf(article_url, output_filename)
+            return await self.browser_manager.convert_url_to_pdf_with_page(article_url, output_filename, self._active_page)
+        finally:
+            # Clean up the dedicated page if we created it
+            if self._owns_page and self._active_page:
+                await self.browser_manager.close_page(self._active_page)
+            self._active_page = None
+            self._owns_page = False
 
     async def test_merge_availability(self):
         """Test if PDF merging tools are available"""
@@ -207,14 +252,14 @@ class LinkProcessor:
         """Load a page and analyze its links using browser manager's approach"""
         try:
             print(f"📄 Loading page: {url}")
-            
+
             # Use browser manager's navigation method for consistency
-            if not await self.browser_manager.navigate_to_url(url):
+            if not await self.browser_manager.navigate_to_url_with_page(url, self._active_page):
                 print(f"❌ Failed to load page using browser manager")
                 return None
-            
+
             # Get page content after successful navigation
-            page = self.browser_manager.get_page()
+            page = self._active_page
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             
@@ -388,6 +433,13 @@ class LinkProcessor:
                 if not domain_match:
                     print(f"    ❌ Domain not in allowed list: {parsed.netloc}")
                     return False
+
+            # Check skip domains (from skip_domains.txt)
+            if SKIP_DOMAINS:
+                for skip_domain in SKIP_DOMAINS:
+                    if skip_domain in parsed.netloc.lower():
+                        print(f"    ❌ Domain in skip list: {skip_domain}")
+                        return False
             
             # Skip patterns (social media, etc.)
             url_lower = url.lower()
@@ -519,87 +571,125 @@ class LinkProcessor:
             return False
     
     async def follow_links(self, links):
-        """Follow links and collect page information"""
-        linked_pages = []
-        processed_count = 0
-        
+        """Follow links and collect page information (with parallel processing)"""
         print(f"🔗 Following {len(links)} links (max: {MAX_LINKED_PAGES})")
-        
-        for i, link in enumerate(links):
-            if processed_count >= MAX_LINKED_PAGES:
-                print(f"📄 Reached maximum linked pages limit ({MAX_LINKED_PAGES})")
-                break
-            
-            url = link['url']
-            link_text = link['text'][:50] + "..." if len(link['text']) > 50 else link['text']
-            
-            print(f"🔗 [{i+1}/{len(links)}] Following: {link_text} -> {url}")
-            
-            try:
-                # Navigate to the linked page using browser manager
-                if not await self.browser_manager.navigate_to_url(url):
-                    print(f"  ❌ Failed to load page")
-                    continue
-                
-                # Get page title
-                page = self.browser_manager.get_page()
-                title = await page.title()
-                
-                page_info = {
-                    'url': url,
-                    'title': title,
-                    'link_text': link['text']
-                }
-                
-                linked_pages.append(page_info)
-                processed_count += 1
-                
-                print(f"  ✅ Successfully loaded: {title[:50]}...")
-                
-                # Wait between requests to be respectful
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                print(f"  ❌ Error loading {url}: {e}")
-                continue
-        
+        print(f"⚡ Using parallel link following with up to {MAX_CONCURRENT_LINKS} concurrent requests")
+
+        # Limit links to max allowed
+        links_to_process = links[:MAX_LINKED_PAGES]
+
+        # Create a semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_LINKS)
+
+        async def follow_single_link(link, index):
+            async with semaphore:
+                return await self._follow_single_link(link, index, len(links_to_process))
+
+        # Create tasks for all links
+        tasks = [follow_single_link(link, i) for i, link in enumerate(links_to_process)]
+
+        # Execute in parallel and gather results
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Filter successful results
+        linked_pages = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"  ❌ Error processing link {i+1}: {result}")
+            elif result is not None:
+                linked_pages.append(result)
+
         print(f"✅ Successfully processed {len(linked_pages)} linked pages")
-        
+
         if linked_pages:
             print("📋 Linked pages summary:")
             for i, page in enumerate(linked_pages, 1):
                 print(f"  {i}. {page['title'][:60]}...")
-        
+
         return linked_pages
+
+    async def _follow_single_link(self, link, index, total):
+        """Follow a single link using a new browser page"""
+        page = None
+        url = link['url']
+        link_text = link['text'][:50] + "..." if len(link['text']) > 50 else link['text']
+
+        print(f"🔗 [{index+1}/{total}] Following: {link_text}")
+
+        try:
+            # Create a new page for this link
+            page = await self.browser_manager.create_new_page()
+            if not page:
+                # Fallback to main page (sequential)
+                if not await self.browser_manager.navigate_to_url(url):
+                    print(f"  ❌ Failed to load page")
+                    return None
+                main_page = self.browser_manager.get_page()
+                title = await main_page.title()
+            else:
+                # Use the new page
+                await page.goto(url, timeout=30000)
+                await asyncio.sleep(2)
+                title = await page.title()
+
+            page_info = {
+                'url': url,
+                'title': title,
+                'link_text': link['text']
+            }
+
+            print(f"  ✅ Successfully loaded: {title[:50]}...")
+            return page_info
+
+        except Exception as e:
+            print(f"  ❌ Error loading {url}: {e}")
+            return None
+        finally:
+            # Clean up the page
+            if page:
+                await self.browser_manager.close_page(page)
     
     async def replace_links_with_page_refs(self, url):
         """Replace web links with PDF page references"""
         try:
             # Navigate to the page if not already there
-            if not await self.browser_manager.navigate_to_url(url):
+            if not await self.browser_manager.navigate_to_url_with_page(url, self._active_page):
                 print(f"  ❌ Failed to navigate to {url} for link replacement")
                 return
-            
-            page = self.browser_manager.get_page()
+
+            page = self._active_page
             
             print(f"🔗 Processing link replacements for: {url}")
             print(f"📝 Available page mappings: {len(self.link_to_page_map)} pages")
             
             # JavaScript to replace links with page references
+            link_map_json = json.dumps(dict(self.link_to_page_map))
             replacement_script = f"""
             (() => {{
-                const linkMap = {dict(self.link_to_page_map)};
+                const linkMap = {link_map_json};
                 const links = document.querySelectorAll('a[href]');
                 let replacedCount = 0;
-                
+
+                // Normalize URL for comparison (strip trailing slash, query params, fragments)
+                const normalizeUrl = (url) => {{
+                    if (!url) return '';
+                    return url.split('?')[0].split('#')[0].replace(/\\/$/, '');
+                }};
+
+                // Build normalized linkMap for lookup
+                const normalizedLinkMap = {{}};
+                for (const [url, page] of Object.entries(linkMap)) {{
+                    normalizedLinkMap[normalizeUrl(url)] = page;
+                }}
+
                 console.log('Link replacement script running...');
                 console.log('Available pages:', Object.keys(linkMap).length);
                 console.log('Total links found:', links.length);
-                
+
                 links.forEach((link, index) => {{
                     const href = link.getAttribute('href');
                     let absoluteUrl;
-                    
+
                     // Convert to absolute URL
                     if (href.startsWith('http')) {{
                         absoluteUrl = href;
@@ -612,10 +702,11 @@ class LinkProcessor:
                         const base = window.location.href.split('/').slice(0, -1).join('/');
                         absoluteUrl = base + '/' + href;
                     }}
-                    
-                    // Check if we have a page number for this URL
-                    if (linkMap[absoluteUrl]) {{
-                        const pageNum = linkMap[absoluteUrl];
+
+                    // Normalize and check if we have a page number for this URL
+                    const normalizedAbsoluteUrl = normalizeUrl(absoluteUrl);
+                    if (normalizedLinkMap[normalizedAbsoluteUrl]) {{
+                        const pageNum = normalizedLinkMap[normalizedAbsoluteUrl];
                         const linkText = link.textContent.trim();
                         
                         console.log(`Replacing link ${{index}}: "${{linkText}}" -> Page ${{pageNum}}`);
@@ -706,10 +797,10 @@ class LinkProcessor:
     async def generate_single_page_pdf(self, url, output_file, is_main=False):
         """Generate a PDF for a single page using the browser manager's proven approach"""
         try:
-            page = self.browser_manager.get_page()
-            
+            page = self._active_page
+
             # Navigate to URL using browser manager's method
-            if not await self.browser_manager.navigate_to_url(url):
+            if not await self.browser_manager.navigate_to_url_with_page(url, self._active_page):
                 return False
 
             # Use browser manager's proven cleanup approach
@@ -738,7 +829,7 @@ class LinkProcessor:
     async def remove_navigation_elements(self):
         """Remove navigation elements from linked pages"""
         try:
-            page = self.browser_manager.get_page()
+            page = self._active_page
             
             cleanup_script = """
             (() => {
@@ -889,11 +980,15 @@ class LinkProcessor:
 
     async def _add_internal_links(self, pdf_path, bookmark_info):
         """Add internal link annotations to the first page pointing to each section"""
+        if len(bookmark_info) <= 1:
+            print("📑 Only one section, no internal links needed")
+            return
+
         try:
             from PyPDF2 import PdfReader, PdfWriter
             from PyPDF2.generic import (
                 DictionaryObject, ArrayObject, NameObject,
-                NumberObject, FloatObject, TextStringObject
+                NumberObject, FloatObject
             )
 
             print("🔗 Adding internal navigation links...")
@@ -905,63 +1000,79 @@ class LinkProcessor:
             for page in reader.pages:
                 writer.add_page(page)
 
-            # Get first page dimensions
-            first_page = reader.pages[0]
+            # Manually copy bookmarks (clone_document_from_reader loses them)
+            if reader.outline:
+                for item in reader.outline:
+                    if not isinstance(item, list):
+                        writer.add_outline_item(item.title, item.page)
+
+            # Get first page and its dimensions
+            first_page = writer.pages[0]
             page_width = float(first_page.mediabox.width)
             page_height = float(first_page.mediabox.height)
 
-            # Create link annotations on first page for each linked article
-            # Position links at the top of the page
-            link_y_start = page_height - 50  # Start near top
-            link_height = 15
-            link_margin = 5
+            # Initialize annotations array if not present
+            if '/Annots' not in first_page:
+                first_page[NameObject('/Annots')] = ArrayObject()
+            annots = first_page['/Annots']
 
-            annotations = []
-
+            # Create link annotations for each linked article
+            links_added = 0
             for i, info in enumerate(bookmark_info[1:], 1):  # Skip main article (index 0)
-                # Calculate link position
-                y_pos = link_y_start - (i * (link_height + link_margin))
-
-                if y_pos < 50:  # Stop if we run out of space
-                    break
+                dest_page = info['start_page']
+                if dest_page >= len(writer.pages):
+                    continue
 
                 # Create link annotation
                 link_annot = DictionaryObject()
                 link_annot[NameObject('/Type')] = NameObject('/Annot')
                 link_annot[NameObject('/Subtype')] = NameObject('/Link')
 
-                # Link rectangle [x1, y1, x2, y2]
+                # Link rectangle - position at bottom of first page as a "table of contents" area
+                # Each link is a horizontal bar
+                y_pos = 100 - (i * 20)  # Stack from bottom up
+                if y_pos < 20:
+                    y_pos = 20  # Minimum position
+
                 link_annot[NameObject('/Rect')] = ArrayObject([
                     FloatObject(50),
                     FloatObject(y_pos),
                     FloatObject(page_width - 50),
-                    FloatObject(y_pos + link_height)
+                    FloatObject(y_pos + 18)
                 ])
 
                 # Destination: go to the start page of this section
-                dest_page = info['start_page']
                 link_annot[NameObject('/Dest')] = ArrayObject([
                     writer.pages[dest_page].indirect_reference,
                     NameObject('/FitH'),
                     FloatObject(page_height)
                 ])
 
-                # Border style (invisible)
+                # Border style (invisible border)
                 link_annot[NameObject('/Border')] = ArrayObject([
                     NumberObject(0), NumberObject(0), NumberObject(0)
                 ])
 
-                annotations.append(link_annot)
+                # Highlight style when clicked
+                link_annot[NameObject('/H')] = NameObject('/I')  # Invert
 
-            # Note: Adding annotations to existing pages in PyPDF2 is complex
-            # The bookmarks created by the merger already provide navigation
-            # For now, we rely on bookmarks for navigation
+                # Add annotation directly to the page's annotations array
+                annots.append(link_annot)
+                links_added += 1
+
+            # Write the updated PDF back to the file
+            if links_added > 0:
+                with open(pdf_path, 'wb') as output_file:
+                    writer.write(output_file)
+                print(f"✅ Added {links_added} internal link annotations to PDF")
 
             print(f"📑 Bookmarks provide navigation to {len(bookmark_info)} sections")
-            print("💡 Use your PDF viewer's bookmark/outline panel to navigate between articles")
+            print("💡 Use PDF viewer's bookmark panel OR click links at bottom of first page")
 
         except Exception as e:
             print(f"⚠️ Could not add link annotations: {e}")
+            import traceback
+            traceback.print_exc()
             # Continue anyway - bookmarks still work
     
     def get_processing_summary(self):

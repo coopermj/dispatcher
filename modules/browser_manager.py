@@ -35,9 +35,14 @@ class BrowserManager:
             self.playwright = async_playwright()
             self.p = await self.playwright.start()
 
+            # On macOS, position window off-screen to prevent focus stealing in headed mode
+            launch_args = ['--no-first-run', '--no-default-browser-check']
+            if not BROWSER_HEADLESS:
+                launch_args.append('--window-position=-2400,-2400')
+
             self.browser = await self.p.chromium.launch(
                 headless=BROWSER_HEADLESS,
-                args=['--no-first-run', '--no-default-browser-check']
+                args=launch_args
             )
 
             self.context = await self.browser.new_context(
@@ -285,3 +290,182 @@ class BrowserManager:
     def is_session_active(self):
         """Check if browser session is active"""
         return self.browser is not None and self.page is not None
+
+    async def create_new_page(self):
+        """Create a new page in the current context for parallel operations"""
+        if not self.context:
+            print("❌ Cannot create new page - no browser context")
+            return None
+        try:
+            new_page = await self.context.new_page()
+            return new_page
+        except Exception as e:
+            print(f"❌ Error creating new page: {e}")
+            return None
+
+    async def close_page(self, page):
+        """Close a specific page"""
+        if page and page != self.page:  # Don't close the main page
+            try:
+                await page.close()
+            except Exception as e:
+                print(f"⚠️ Error closing page: {e}")
+
+    async def convert_url_to_pdf_with_page(self, url, output_filename, page=None):
+        """Convert URL to PDF using a specific page (for parallel operations)"""
+        use_page = page or self.page
+        try:
+            # Check if we're already on the correct URL (to preserve DOM modifications like link rewrites)
+            current_url = use_page.url
+            # Normalize URLs for comparison (strip scheme, trailing slashes, and compare base path)
+            def normalize_url(u):
+                if not u:
+                    return ''
+                u = u.rstrip('/')
+                # Remove scheme for comparison
+                if u.startswith('https://'):
+                    u = u[8:]
+                elif u.startswith('http://'):
+                    u = u[7:]
+                # Remove query params and fragments for base comparison
+                u = u.split('?')[0].split('#')[0]
+                return u.rstrip('/')
+
+            if current_url and normalize_url(current_url) == normalize_url(url):
+                print(f"📄 Already on page: {url} (preserving DOM modifications)")
+            else:
+                print(f"🔗 Navigating to: {url}")
+                # Navigate to the URL
+                await use_page.goto(url, timeout=30000)
+                await asyncio.sleep(3)
+
+            # Check page content
+            title = await use_page.title()
+            print(f"📄 Page title: {title}")
+
+            # Wait for content to load
+            try:
+                await use_page.wait_for_selector('article, .article, .post, .content, main', timeout=10000)
+                print("✅ Content loaded")
+            except:
+                print("⚠️ Standard content selectors not found, but continuing...")
+
+            await asyncio.sleep(2)
+
+            # Remove header elements before PDF generation
+            await self.remove_header_elements_from_page(use_page)
+
+            # Generate PDF
+            print(f"📄 Generating PDF: {output_filename}")
+            await use_page.pdf(
+                path=output_filename,
+                format='A4',
+                margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
+                print_background=True,
+                prefer_css_page_size=False
+            )
+
+            # Verify PDF was created
+            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 5000:
+                print(f"✅ PDF created successfully: {output_filename}")
+                return True
+            else:
+                print("❌ PDF creation failed or file too small")
+                return False
+
+        except Exception as e:
+            print(f"❌ Error converting URL to PDF: {e}")
+            return False
+
+    async def remove_header_elements_from_page(self, page):
+        """Remove header elements from a specific page"""
+        try:
+            # Safer removal script that preserves main content
+            header_removal_script = """
+            (() => {
+                // First, identify the main content area and protect it
+                const mainContent = document.querySelector('article, main, [role="main"], .post-content, .article-content, .entry-content');
+
+                // Remove navigation elements by tag (but not if they're inside main content)
+                ['header', 'nav', 'footer'].forEach(tag => {
+                    document.querySelectorAll(tag).forEach(e => {
+                        // Don't remove if it's inside the main content area
+                        if (mainContent && mainContent.contains(e)) return;
+                        e.remove();
+                    });
+                });
+
+                // Remove specific UI elements that are clearly not content
+                // Note: removed 'newsletter' and 'comment' from keywords as they can match content
+                const keywords = [
+                    'navbar', 'banner', 'paywall', 'breadcrumb',
+                    'subscribe-modal', 'sidebar', 'popup', 'site-footer',
+                    'site-info', 'z-scroll-to', 'primary-button', 'sticky-header'
+                ];
+                keywords.forEach(word => {
+                    document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => {
+                        // Don't remove if it's inside the main content area
+                        if (mainContent && mainContent.contains(e)) return;
+                        // Don't remove the main content area itself
+                        if (e === mainContent) return;
+                        e.remove();
+                    });
+                });
+
+                // Remove large fixed/sticky overlays (like paywalls)
+                document.querySelectorAll('*').forEach(e => {
+                    // Skip the main content area
+                    if (mainContent && (mainContent.contains(e) || e.contains(mainContent))) return;
+
+                    const s = window.getComputedStyle(e);
+                    if ((s.position === 'fixed' || s.position === 'sticky') &&
+                        e.offsetHeight > window.innerHeight * 0.5 &&
+                        e.offsetWidth > window.innerWidth * 0.5) {
+                        e.remove();
+                    }
+                });
+
+                // Adjust margins on main content
+                if (mainContent) {
+                    mainContent.style.marginTop = '0px';
+                    mainContent.style.paddingTop = '20px';
+                }
+
+                return mainContent ? 'Main content found' : 'No main content identified';
+            })();
+            """
+            result = await page.evaluate(header_removal_script)
+            print(f"🧹 Header cleanup: {result}")
+            await asyncio.sleep(1)
+            await page.evaluate('window.scrollTo(0, 0);')
+            return True
+        except Exception as e:
+            print(f"⚠️ Error removing header elements: {e}")
+            return True
+
+    async def navigate_to_url_with_page(self, url, page=None):
+        """Navigate to a URL using a specific page"""
+        use_page = page or self.page
+        try:
+            print(f"🔗 Navigating to: {url}")
+            await use_page.goto(url, timeout=BROWSER_TIMEOUT)
+            await asyncio.sleep(CONTENT_LOAD_WAIT)
+
+            title = await use_page.title()
+            print(f"📄 Page title: {title}")
+
+            try:
+                await use_page.wait_for_selector(
+                    ', '.join(CONTENT_SELECTORS),
+                    timeout=10000
+                )
+                print("✅ Content loaded")
+            except:
+                print("⚠️ Standard content selectors not found, but continuing...")
+
+            await asyncio.sleep(2)
+            return True
+
+        except Exception as e:
+            print(f"❌ Error navigating to URL: {e}")
+            return False
