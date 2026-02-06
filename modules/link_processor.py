@@ -68,6 +68,13 @@ class LinkProcessor:
                 print("❌ Failed to load main article")
                 return False
 
+            # Wait for page to be fully stable before extracting content
+            try:
+                await self._active_page.wait_for_load_state('networkidle', timeout=10000)
+            except:
+                pass  # Continue even if timeout - page may still be usable
+            await asyncio.sleep(1)  # Extra stability wait
+
             # Get page content and extract links
             content = await self._active_page.content()
             soup = BeautifulSoup(content, 'html.parser')

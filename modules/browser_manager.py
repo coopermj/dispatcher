@@ -337,7 +337,12 @@ class BrowserManager:
                 print(f"🔗 Navigating to: {url}")
                 # Navigate to the URL
                 await use_page.goto(url, timeout=30000)
-                await asyncio.sleep(3)
+                # Wait for page to be stable
+                try:
+                    await use_page.wait_for_load_state('networkidle', timeout=10000)
+                except:
+                    pass  # Continue even if timeout
+                await asyncio.sleep(2)
 
             # Check page content
             title = await use_page.title()
@@ -350,7 +355,7 @@ class BrowserManager:
             except:
                 print("⚠️ Standard content selectors not found, but continuing...")
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
             # Remove header elements before PDF generation
             await self.remove_header_elements_from_page(use_page)
@@ -463,7 +468,13 @@ class BrowserManager:
             except:
                 print("⚠️ Standard content selectors not found, but continuing...")
 
-            await asyncio.sleep(2)
+            # Wait for page to be fully stable (network idle)
+            try:
+                await use_page.wait_for_load_state('networkidle', timeout=5000)
+            except:
+                pass  # Continue even if timeout
+
+            await asyncio.sleep(1)
             return True
 
         except Exception as e:
