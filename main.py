@@ -464,12 +464,14 @@ async def main():
     parser = argparse.ArgumentParser(description='The Dispatch PDF Converter')
     parser.add_argument('--url', type=str, default=None,
                         help='Convert a specific URL to PDF directly (skips scanning)')
+    parser.add_argument('--skip-email', action='store_true',
+                        help='Skip the email converter step')
     args = parser.parse_args()
 
     try:
         # Create converter instance
         converter = DispatchConverter()
-        
+
         # Print startup banner
         converter.print_startup_banner()
 
@@ -488,7 +490,19 @@ async def main():
                 force_reprocess=False,
                 upload_to_remarkable=True
             )
-        
+
+        # Run email converter unless explicitly skipped
+        if not args.skip_email:
+            print("\n" + "=" * 65)
+            print("📧 Starting email converter...")
+            print("=" * 65)
+            try:
+                from email_converter import run_email_converter
+                await run_email_converter()
+            except Exception as e:
+                print(f"⚠️ Email converter failed (website processing already complete): {e}")
+                print(f"🔧 DEBUG: {traceback.format_exc()}")
+
     except KeyboardInterrupt:
         print("\n👋 Process interrupted by user")
     except Exception as e:
