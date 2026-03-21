@@ -22,7 +22,8 @@ from modules.utils import (
 from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
-    DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES, FOLLOW_ARTICLE_LINKS
+    DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES, FOLLOW_ARTICLE_LINKS,
+    MAX_CONCURRENT_CONVERSIONS
 )
 
 
@@ -36,9 +37,7 @@ class DispatchConverter:
         self.browser_manager = BrowserManager()
         self.tracking_manager = TrackingManager()
         self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH)
-        self.website_scanner = WebsiteScanner(self.browser_manager)
-        self.link_processor = LinkProcessor(self.browser_manager)
-        
+        self.website_scanner = WebsiteScanner(self.browser_manager, self.tracking_manager)  # Pass tracking for early duplicate detection
         # Configuration
         self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
@@ -204,14 +203,10 @@ class DispatchConverter:
                 return True
             
             print(f"\n🔄 Converting {len(content_list)} items to PDF...")
-            
-            # Process each item
-            for i, content_data in enumerate(content_list, 1):
-                await self.process_single_item(content_data, i)
-                
-                # Small delay between conversions
-                if i < len(content_list):
-                    await asyncio.sleep(SLEEP_BETWEEN_CONVERSIONS)
+            print(f"⚡ Using parallel processing with up to {MAX_CONCURRENT_CONVERSIONS} concurrent conversions")
+
+            # Process items in parallel with concurrency limit
+            await self.process_items_parallel(content_list)
             
             # Calculate processing time
             self.stats['processing_time'] = time.time() - start_time
@@ -259,8 +254,138 @@ class DispatchConverter:
         for article in articles:
             content_data = self.website_scanner.create_article_data_for_processing(article)
             content_list.append(content_data)
-        
+
         return content_list
+
+    async def process_items_parallel(self, content_list):
+        """Process multiple items in parallel with concurrency limit"""
+        # Create a semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_CONVERSIONS)
+
+        async def process_with_semaphore(content_data, index):
+            async with semaphore:
+                return await self.process_single_item_parallel(content_data, index)
+
+        # Create tasks for all items
+        tasks = [process_with_semaphore(content_data, i+1) for i, content_data in enumerate(content_list)]
+
+        # Execute in parallel and gather results
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Log any exceptions
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"❌ Error processing item {i+1}: {result}")
+
+    async def process_single_item_parallel(self, content_data, index, force_reprocess: bool = False, effective_mode: str = None):
+        """Process a single item using a dedicated browser page (for parallel operations)"""
+        page = None
+        try:
+            mode = effective_mode or self.processing_mode
+            item_type = "email" if mode == 'email' else "article"
+            print(f"\n📄 [{index}] Processing {item_type}: {content_data['subject']}")
+
+            # Check if already processed (skip check when force_reprocess=True)
+            if not force_reprocess and self.tracking_manager.is_email_processed(content_data):
+                processed_info = self.tracking_manager.get_processed_info(content_data)
+                print(f"⏭️  [{index}] SKIPPED - Already processed on {processed_info.get('processed_date', 'unknown date')}")
+                self.stats['skipped_duplicates'] += 1
+                return True
+
+            # Check for content URL
+            content_url = content_data.get('read_online_url')
+            if not content_url:
+                print(f"❌ [{index}] No URL found for {item_type}, skipping...")
+                self.stats['failed_conversions'] += 1
+                return False
+
+            print(f"🔗 [{index}] Found URL: {content_url}")
+
+            # Create PDF filename
+            pdf_filename = create_safe_pdf_filename(
+                content_data['subject'],
+                index=index,
+                output_dir=self.output_dir,
+                prefix=f"dispatch_{mode}"
+            )
+
+            # Create a new page for this conversion
+            page = await self.browser_manager.create_new_page()
+
+            # Convert URL to PDF
+            if FOLLOW_ARTICLE_LINKS and mode == 'website':
+                # Create a fresh LinkProcessor per article to avoid shared state in parallel runs
+                link_processor = LinkProcessor(self.browser_manager)
+                success = await link_processor.process_article_with_links(
+                    content_url,
+                    str(pdf_filename),
+                    page=page
+                )
+                link_summary = link_processor.get_processing_summary()
+                self.stats['total_linked_pages'] += link_summary.get('linked_pages', 0)
+                if link_summary.get('linked_pages', 0) > 0:
+                    print(f"📄 [{index}] Created multi-page PDF with {link_summary['total_pages']} pages")
+            else:
+                # Use parallel-safe PDF conversion
+                if page:
+                    success = await self.browser_manager.convert_url_to_pdf_with_page(
+                        content_url,
+                        str(pdf_filename),
+                        page
+                    )
+                else:
+                    success = await self.browser_manager.convert_url_to_pdf(
+                        content_url,
+                        str(pdf_filename)
+                    )
+
+            if not success:
+                print(f"❌ [{index}] Failed to convert to PDF")
+                self.stats['failed_conversions'] += 1
+                return False
+
+            # Update file size stats
+            file_info = get_file_info(pdf_filename)
+            if file_info and 'size' in file_info:
+                self.stats['total_file_size'] += file_info['size']
+                print(f"📄 [{index}] PDF size: {file_info['size_formatted']}")
+
+            # Upload to ReMarkable if enabled
+            remarkable_uploaded = False
+            if self.stats['remarkable_enabled'] and self.remarkable_manager.is_available():
+                upload_success = self.remarkable_manager.upload_pdf(pdf_filename)
+                if upload_success:
+                    self.stats['remarkable_uploads'] += 1
+                    remarkable_uploaded = True
+                else:
+                    self.stats['remarkable_failures'] += 1
+                    print(f"⚠️ [{index}] Failed to upload to ReMarkable")
+
+            # Mark as processed in tracking
+            tracking_success = self.tracking_manager.mark_email_processed(
+                content_data,
+                str(pdf_filename),
+                remarkable_uploaded,
+                success=True
+            )
+
+            if tracking_success:
+                self.tracking_manager.save_tracking_data()
+
+            print(f"✅ [{index}] Successfully processed: {pdf_filename.name}")
+            self.stats['successful_conversions'] += 1
+
+            return True
+
+        except Exception as e:
+            item_type = "email" if (effective_mode or self.processing_mode) == 'email' else "article"
+            print(f"❌ [{index}] Error processing {item_type}: {e}")
+            self.stats['failed_conversions'] += 1
+            return False
+        finally:
+            # Clean up the page
+            if page:
+                await self.browser_manager.close_page(page)
 
     async def process_single_item(self, content_data, index):
         """Process a single item (email or article) and convert to PDF"""
