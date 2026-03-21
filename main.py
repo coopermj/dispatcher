@@ -571,18 +571,19 @@ async def main():
         if args.url:
             if not await converter.initialize():
                 return
-            await converter.process_single_url(args.url)
-            converter.print_final_summary()
+            try:
+                await converter.process_single_url(args.url)
+                converter.print_final_summary()
+            finally:
+                await converter.cleanup()
         # Normal mode: scan and process
         elif converter.processing_mode == 'email':
             await converter.process_content(
-                max_items=5,
                 force_reprocess=False,
                 upload_to_remarkable=True
             )
         else:  # website mode
             await converter.process_content(
-                max_items=10,
                 force_reprocess=False,
                 upload_to_remarkable=True
             )
