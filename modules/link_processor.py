@@ -90,8 +90,44 @@ class LinkProcessor:
             main_pdf = temp_dir / "page_1_main.pdf"
             print(f"📄 Creating PDF for main article FIRST (before link following): {article_url}")
 
+            # Save HTML before cleanup for debugging
+            await self.browser_manager.save_html_snapshot_from_page(self._active_page, "before_cleanup", article_url)
+
             # Remove header elements before PDF generation
             await self.browser_manager.remove_header_elements_from_page(self._active_page)
+
+            # Save HTML after cleanup for debugging
+            await self.browser_manager.save_html_snapshot_from_page(self._active_page, "after_cleanup", article_url)
+
+            # Force lazy-loaded images to load before generating PDF.
+            # 1. Set loading="eager" to tell the browser to fetch immediately.
+            # 2. Scroll to the bottom and back to trigger IntersectionObserver
+            #    (required for images that use sizes="auto").
+            await self._active_page.evaluate("""
+                () => {
+                    document.querySelectorAll('img[loading="lazy"]').forEach(img => {
+                        img.loading = 'eager';
+                        if (img.dataset.src) img.src = img.dataset.src;
+                        if (img.dataset.srcset) img.srcset = img.dataset.srcset;
+                    });
+                    document.querySelectorAll('source[data-srcset]').forEach(s => {
+                        s.srcset = s.dataset.srcset;
+                    });
+                }
+            """)
+            # Scroll to bottom to trigger IntersectionObserver for any remaining lazy elements
+            await self._active_page.evaluate("""
+                async () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 500));
+                    window.scrollTo(0, 0);
+                    await new Promise(r => setTimeout(r, 200));
+                }
+            """)
+            try:
+                await self._active_page.wait_for_load_state('networkidle', timeout=8000)
+            except:
+                pass
 
             # Generate PDF directly from current page state (don't re-navigate)
             print(f"📄 Generating PDF: {main_pdf}")
@@ -148,6 +184,7 @@ class LinkProcessor:
             # Step 4: Generate PDFs for linked pages
             # Skip link replacement - it causes too many navigation issues
             print(f"🔗 Creating PDFs for {len(linked_pages)} linked pages...")
+            page_titles = ["Main Article"]
             for i, page_info in enumerate(linked_pages, 2):
                 page_pdf = temp_dir / f"page_{i}_{self.sanitize_filename(page_info['title'])}.pdf"
                 print(f"🔗 [{i-1}/{len(linked_pages)}] Creating PDF for: {page_info['title'][:50]}...")
@@ -162,6 +199,7 @@ class LinkProcessor:
                         if size > 10000:  # More than 10KB suggests real content
                             print(f"    ✅ PDF created: {size} bytes")
                             pdf_pages.append(str(page_pdf))
+                            page_titles.append(page_info.get('title', 'Linked Article'))
                         else:
                             print(f"    ⚠️ PDF too small ({size} bytes), likely error page - skipping")
                             page_pdf.unlink(missing_ok=True)
@@ -172,18 +210,10 @@ class LinkProcessor:
 
             print(f"📊 PDF creation summary: {len(pdf_pages)} files created")
 
-            # Build page titles for bookmarks
-            page_titles = ["Main Article"]
-            for page_info in linked_pages:
-                # Only add title if we actually created a PDF for this page
-                page_titles.append(page_info.get('title', 'Linked Article'))
-
             # Step 5: Merge all PDFs with bookmarks
             if len(pdf_pages) > 1:
                 print(f"🔀 Attempting to merge {len(pdf_pages)} PDFs...")
-                # Adjust page_titles to match actual pdf_pages count
-                actual_titles = page_titles[:len(pdf_pages)]
-                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=actual_titles)
+                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=page_titles)
 
                 if success and Path(output_filename).exists():
                     final_size = Path(output_filename).stat().st_size

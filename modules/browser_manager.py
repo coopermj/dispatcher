@@ -71,6 +71,22 @@ class BrowserManager:
         except Exception as e:
             print(f"⚠️ Error closing browser: {e}")
 
+    async def save_html_snapshot_from_page(self, page, filename_suffix, url=""):
+        """Save HTML from a specific page object for debugging"""
+        try:
+            content = await page.content()
+            debug_dir = Path("debug_html")
+            debug_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"debug_html/page_{timestamp}_{filename_suffix}.html"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f"📄 HTML snapshot saved: {filename}")
+            return filename
+        except Exception as e:
+            print(f"⚠️ Error saving HTML snapshot: {e}")
+            return None
+
     async def save_html_snapshot(self, filename_suffix, url=""):
         """Save current page HTML for debugging - exact copy from tester.py"""
         try:
@@ -135,6 +151,17 @@ class BrowserManager:
                     main.style.marginTop = '0px';
                     main.style.paddingTop = '0px';
                 }
+
+                // Cap full-viewport hero figures so they don't consume the entire first PDF page.
+                document.querySelectorAll('figure').forEach(e => {
+                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                        e.style.height = '300px';
+                        e.style.maxHeight = '300px';
+                        if (e.parentElement) {
+                            e.parentElement.style.minHeight = '450px';
+                        }
+                    }
+                });
             })();
             """
 
@@ -357,8 +384,42 @@ class BrowserManager:
 
             await asyncio.sleep(1)
 
+            # Save HTML before cleanup for debugging
+            await self.save_html_snapshot_from_page(use_page, "before_cleanup", url)
+
             # Remove header elements before PDF generation
             await self.remove_header_elements_from_page(use_page)
+
+            # Save HTML after cleanup for debugging
+            await self.save_html_snapshot_from_page(use_page, "after_cleanup", url)
+
+            # Force lazy-loaded images to load before generating PDF.
+            # 1. Set loading="eager" for immediate fetch.
+            # 2. Scroll to bottom and back to trigger IntersectionObserver (needed for sizes="auto").
+            await use_page.evaluate("""
+                () => {
+                    document.querySelectorAll('img[loading="lazy"]').forEach(img => {
+                        img.loading = 'eager';
+                        if (img.dataset.src) img.src = img.dataset.src;
+                        if (img.dataset.srcset) img.srcset = img.dataset.srcset;
+                    });
+                    document.querySelectorAll('source[data-srcset]').forEach(s => {
+                        s.srcset = s.dataset.srcset;
+                    });
+                }
+            """)
+            await use_page.evaluate("""
+                async () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 500));
+                    window.scrollTo(0, 0);
+                    await new Promise(r => setTimeout(r, 200));
+                }
+            """)
+            try:
+                await use_page.wait_for_load_state('networkidle', timeout=8000)
+            except:
+                pass
 
             # Generate PDF
             print(f"📄 Generating PDF: {output_filename}")
@@ -435,6 +496,22 @@ class BrowserManager:
                     mainContent.style.marginTop = '0px';
                     mainContent.style.paddingTop = '20px';
                 }
+
+                // Cap full-viewport hero figures so they don't consume the entire first PDF page.
+                // Only target <figure> tags (not nav drawers/panels that also use h-screen).
+                // Tailwind's h-screen = height:100vh.
+                // Also give the parent container min-height:450px so the absolute bottom-0
+                // title/byline overlay (which is a sibling of the figure, positioned relative
+                // to the parent) doesn't render above the top of the page.
+                document.querySelectorAll('figure').forEach(e => {
+                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                        e.style.height = '300px';
+                        e.style.maxHeight = '300px';
+                        if (e.parentElement) {
+                            e.parentElement.style.minHeight = '450px';
+                        }
+                    }
+                });
 
                 return mainContent ? 'Main content found' : 'No main content identified';
             })();
