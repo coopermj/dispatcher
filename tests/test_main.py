@@ -151,3 +151,30 @@ async def test_effective_mode_website_enables_link_following(mock_converter):
     # LinkProcessor should have been instantiated (link following ran)
     MockLP.assert_called_once()
     mock_lp_instance.process_article_with_links.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for process_single_url
+# ---------------------------------------------------------------------------
+
+async def test_process_single_url_builds_correct_content_data(mock_converter):
+    """process_single_url builds content_data from URL and calls process_single_item_parallel."""
+    url = "https://thedispatch.com/article/neon-genesis-evangelion-american-millennials/"
+
+    with patch.object(mock_converter, 'process_single_item_parallel', new_callable=AsyncMock) as mock_psi:
+        mock_psi.return_value = True
+        await mock_converter.process_single_url(url)
+
+    mock_psi.assert_called_once()
+    call_args = mock_psi.call_args
+    content_data = call_args[0][0]  # first positional arg
+
+    assert content_data['subject'] == 'Neon Genesis Evangelion American Millennials'
+    assert content_data['read_online_url'] == url
+    assert content_data['source'] == 'cli'
+    assert content_data['sender'] == 'CLI'
+    assert content_data['is_html'] is True
+    # force_reprocess=True must be passed
+    assert call_args[1].get('force_reprocess') is True or call_args[0][2] is True
+    # effective_mode='website' must be passed
+    assert call_args[1].get('effective_mode') == 'website' or call_args[0][3] == 'website'

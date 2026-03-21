@@ -7,6 +7,7 @@ Main entry point for the application
 import asyncio
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 # Import modules
@@ -517,6 +518,35 @@ class DispatchConverter:
         if self.stats['failed_conversions'] > 0:
             print("🔧 Check debug_html/ folder for snapshots of failed conversions")
 
+    async def process_single_url(self, url):
+        """Process a single URL directly, bypassing scanning. Always force-reprocesses."""
+        from urllib.parse import urlparse
+        # Derive a human-readable title from the URL slug
+        path = urlparse(url).path
+        segments = [s for s in path.split('/') if s]
+        slug = segments[-1] if segments else 'article'
+        subject = slug.replace('-', ' ').title()
+
+        content_data = {
+            'subject': subject,
+            'read_online_url': url,
+            'message_id': f"url_{hash(url)}",
+            'sender': 'CLI',
+            'date': datetime.now().isoformat(),
+            'body': '',
+            'raw_body': f"<a href='{url}'>{subject}</a>",
+            'is_html': True,
+            'source': 'cli',
+        }
+
+        print(f"\n🔗 Processing URL: {url}")
+        print(f"📄 Derived title: {subject}")
+        await self.process_single_item_parallel(
+            content_data, 1,
+            force_reprocess=True,
+            effective_mode='website'
+        )
+
     async def cleanup(self):
         """Cleanup resources"""
         await self.browser_manager.close_browser_session()
@@ -524,25 +554,37 @@ class DispatchConverter:
 
 async def main():
     """Main function"""
+    import argparse
+    parser = argparse.ArgumentParser(description='The Dispatch PDF Converter')
+    parser.add_argument('--url', type=str, default=None,
+                        help='Convert a specific URL to PDF directly (skips scanning)')
+    args = parser.parse_args()
+
     try:
         # Create converter instance
         converter = DispatchConverter()
         
         # Print startup banner
         converter.print_startup_banner()
-        
-        # Process content based on mode from .env file
-        if converter.processing_mode == 'email':
+
+        # --url mode: process a single URL directly
+        if args.url:
+            if not await converter.initialize():
+                return
+            await converter.process_single_url(args.url)
+            converter.print_final_summary()
+        # Normal mode: scan and process
+        elif converter.processing_mode == 'email':
             await converter.process_content(
-                max_items=5,                    # Number of emails to process
-                force_reprocess=False,          # Set to True to reprocess already converted emails
-                upload_to_remarkable=True       # Set to False to disable ReMarkable upload
+                max_items=5,
+                force_reprocess=False,
+                upload_to_remarkable=True
             )
         else:  # website mode
             await converter.process_content(
-                max_items=10,                   # Number of articles to process
-                force_reprocess=False,          # Set to True to reprocess already converted articles
-                upload_to_remarkable=True       # Set to False to disable ReMarkable upload
+                max_items=10,
+                force_reprocess=False,
+                upload_to_remarkable=True
             )
         
     except KeyboardInterrupt:
