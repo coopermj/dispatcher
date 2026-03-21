@@ -1,6 +1,5 @@
 """Unit tests for DispatchConverter logic in main.py"""
 import pytest
-import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
 
@@ -69,19 +68,25 @@ def mock_converter():
         converter.browser_manager.close_page = AsyncMock()
         converter.browser_manager.convert_url_to_pdf_with_page = AsyncMock(return_value=False)
         converter.stats = {
+            'total_emails': 0,
+            'total_articles': 0,
+            'successful_conversions': 0,
             'skipped_duplicates': 0,
             'failed_conversions': 0,
-            'successful_conversions': 0,
-            'remarkable_enabled': False,
+            'remarkable_uploads': 0,
+            'remarkable_failures': 0,
+            'processing_time': 0,
             'total_file_size': 0,
+            'processing_mode': 'website',
             'total_linked_pages': 0,
+            'follow_links_enabled': False,
+            'remarkable_enabled': False,
         }
         converter.processing_mode = 'website'
         converter.output_dir = __import__('pathlib').Path('/tmp/dispatch_test_pdfs')
         yield converter
 
 
-@pytest.mark.asyncio
 async def test_force_reprocess_false_skips_already_processed(mock_converter):
     """Without force_reprocess, already-processed items are skipped."""
     content_data = {
@@ -97,9 +102,9 @@ async def test_force_reprocess_false_skips_already_processed(mock_converter):
 
     assert result is True
     assert mock_converter.stats['skipped_duplicates'] == 1
+    mock_converter.tracking_manager.is_email_processed.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_force_reprocess_true_bypasses_tracking_check(mock_converter):
     """With force_reprocess=True, already-processed items are NOT skipped."""
     content_data = {
@@ -121,7 +126,6 @@ async def test_force_reprocess_true_bypasses_tracking_check(mock_converter):
     mock_converter.tracking_manager.is_email_processed.assert_not_called()
 
 
-@pytest.mark.asyncio
 async def test_effective_mode_website_enables_link_following(mock_converter):
     """effective_mode='website' causes link_processor to be instantiated (link following path)."""
     content_data = {
