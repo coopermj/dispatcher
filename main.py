@@ -4,6 +4,7 @@ The Dispatch Email to PDF Converter - Modular Version
 Main entry point for the application
 """
 
+import argparse
 import asyncio
 import time
 import traceback
@@ -388,100 +389,6 @@ class DispatchConverter:
             if page:
                 await self.browser_manager.close_page(page)
 
-    async def process_single_item(self, content_data, index):
-        """Process a single item (email or article) and convert to PDF"""
-        try:
-            item_type = "email" if self.processing_mode == 'email' else "article"
-            print(f"\n📄 Processing {item_type}: {content_data['subject']}")
-            
-            # Check if already processed
-            if self.tracking_manager.is_email_processed(content_data):
-                processed_info = self.tracking_manager.get_processed_info(content_data)
-                print(f"⏭️  SKIPPED - Already processed on {processed_info.get('processed_date', 'unknown date')}")
-                print(f"📁 Existing PDF: {processed_info.get('pdf_path', 'unknown path')}")
-                print(f"📤 ReMarkable: {'✅ Uploaded' if processed_info.get('remarkable_uploaded') else '❌ Not uploaded'}")
-                self.stats['skipped_duplicates'] += 1
-                return True
-            
-            # Check for content URL
-            content_url = content_data.get('read_online_url')
-            if not content_url:
-                print(f"❌ No URL found for {item_type}, skipping...")
-                self.stats['failed_conversions'] += 1
-                return False
-            
-            print(f"🔗 Found URL: {content_url}")
-            
-            # Create PDF filename
-            pdf_filename = create_safe_pdf_filename(
-                content_data['subject'], 
-                index=index,
-                output_dir=self.output_dir,
-                prefix=f"dispatch_{self.processing_mode}"
-            )
-            
-            # Convert URL to PDF (with or without link processing)
-            if FOLLOW_ARTICLE_LINKS and self.processing_mode == 'website':
-                success = await self.link_processor.process_article_with_links(
-                    content_url, 
-                    str(pdf_filename)
-                )
-                
-                # Get link processing stats
-                link_summary = self.link_processor.get_processing_summary()
-                self.stats['total_linked_pages'] += link_summary.get('linked_pages', 0)
-                
-                if link_summary.get('linked_pages', 0) > 0:
-                    print(f"📄 Created multi-page PDF with {link_summary['total_pages']} pages")
-            else:
-                success = await self.browser_manager.convert_url_to_pdf(
-                    content_url, 
-                    str(pdf_filename)
-                )
-            
-            if not success:
-                print(f"❌ Failed to convert to PDF")
-                self.stats['failed_conversions'] += 1
-                return False
-            
-            # Update file size stats
-            file_info = get_file_info(pdf_filename)
-            if file_info and 'size' in file_info:
-                self.stats['total_file_size'] += file_info['size']
-                print(f"📄 PDF size: {file_info['size_formatted']}")
-            
-            # Upload to ReMarkable if enabled
-            remarkable_uploaded = False
-            if self.stats['remarkable_enabled'] and self.remarkable_manager.is_available():
-                upload_success = self.remarkable_manager.upload_pdf(pdf_filename)
-                if upload_success:
-                    self.stats['remarkable_uploads'] += 1
-                    remarkable_uploaded = True
-                else:
-                    self.stats['remarkable_failures'] += 1
-                    print(f"⚠️ Failed to upload to ReMarkable")
-            
-            # Mark as processed in tracking (only for successful conversions)
-            tracking_success = self.tracking_manager.mark_email_processed(
-                content_data, 
-                str(pdf_filename), 
-                remarkable_uploaded,
-                success=True  # Only mark as processed if conversion was successful
-            )
-            
-            if tracking_success:
-                self.tracking_manager.save_tracking_data()
-            
-            print(f"✅ Successfully processed: {pdf_filename.name}")
-            self.stats['successful_conversions'] += 1
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Error processing {item_type}: {e}")
-            self.stats['failed_conversions'] += 1
-            return False
-
     # Keep the old method name for backwards compatibility
     async def process_emails(self, max_emails=None, force_reprocess=None, upload_to_remarkable=None):
         """Legacy method for email processing (backwards compatibility)"""
@@ -530,7 +437,7 @@ class DispatchConverter:
         content_data = {
             'subject': subject,
             'read_online_url': url,
-            'message_id': f"url_{hash(url)}",
+            'message_id': f"website_{hash(url)}",
             'sender': 'CLI',
             'date': datetime.now().isoformat(),
             'body': '',
@@ -554,7 +461,6 @@ class DispatchConverter:
 
 async def main():
     """Main function"""
-    import argparse
     parser = argparse.ArgumentParser(description='The Dispatch PDF Converter')
     parser.add_argument('--url', type=str, default=None,
                         help='Convert a specific URL to PDF directly (skips scanning)')
@@ -576,13 +482,8 @@ async def main():
                 converter.print_final_summary()
             finally:
                 await converter.cleanup()
-        # Normal mode: scan and process
-        elif converter.processing_mode == 'email':
-            await converter.process_content(
-                force_reprocess=False,
-                upload_to_remarkable=True
-            )
-        else:  # website mode
+        # Normal mode: scan and process (email or website based on PROCESSING_MODE in .env)
+        else:
             await converter.process_content(
                 force_reprocess=False,
                 upload_to_remarkable=True
