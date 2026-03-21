@@ -17,3 +17,7 @@ PyPDF2
 # Utility dependencies
 pathlib2
 python-dotenv
+
+# Testing
+pytest
+pytest-asyncio
