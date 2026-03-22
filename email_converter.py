@@ -64,6 +64,29 @@ class DispatchPersistentConverter:
         self.processed_emails = {}
         self.load_tracking_data()
 
+        # Cross-script dedup: URLs already processed by the web scanner
+        self.web_processed_urls = self._load_web_processed_urls()
+
+    def _load_web_processed_urls(self, web_tracking_file='dispatch_tracking.json'):
+        """Load URLs already processed by the web scanner to prevent cross-script duplicates"""
+        urls = set()
+        try:
+            if os.path.exists(web_tracking_file):
+                with open(web_tracking_file, 'r') as f:
+                    web_data = json.load(f)
+                for entry in web_data.values():
+                    url = entry.get('read_online_url', '')
+                    if url:
+                        urls.add(url)
+                print(f"🔗 Loaded {len(urls)} already-processed URLs from web scanner (cross-dedup)")
+        except Exception as e:
+            print(f"⚠️ Could not load web scanner tracking for cross-dedup: {e}")
+        return urls
+
+    def is_url_already_processed_by_web(self, url):
+        """Return True if the web scanner already produced a PDF for this URL"""
+        return url in self.web_processed_urls
+
     def load_tracking_data(self):
         """Load previously processed email tracking data"""
         try:
@@ -451,26 +474,31 @@ class DispatchPersistentConverter:
                 'my account'
             ]
 
-            # Look for login indicators (meaning we're NOT logged in)
+            # Look for login indicators (meaning we're NOT logged in).
+            # NOTE: 'subscribe' and 'get started' appear even when logged in on The Dispatch,
+            # so only use unambiguous indicators like an actual sign-in link/button.
             login_indicators = [
                 'sign in',
-                'login',
                 'log in',
-                'subscribe',
-                'get started'
             ]
 
             has_login_indicators = any(indicator in page_content.lower() for indicator in login_indicators)
             has_logged_in_indicators = any(indicator in page_content.lower() for indicator in logged_in_indicators)
 
-            # If we have logout/account indicators and no login prompts, we're likely logged in
-            if has_logged_in_indicators and not has_login_indicators:
+            # If we have account indicators, we're logged in. Only reject if we have explicit
+            # sign-in prompts AND no account indicators at all.
+            if has_logged_in_indicators:
                 print("✅ Already authenticated with saved cookies!")
                 self.authenticated = True
                 return True
-            else:
+            elif has_login_indicators and not has_logged_in_indicators:
                 print("❌ Not authenticated - need to log in")
                 return False
+            else:
+                # Ambiguous — assume cookies are good enough to proceed
+                print("✅ Authentication state ambiguous, proceeding with saved cookies")
+                self.authenticated = True
+                return True
 
         except Exception as e:
             print(f"⚠️ Error testing authentication: {e}")
@@ -566,7 +594,12 @@ class DispatchPersistentConverter:
 
             # Wait for user to complete authentication
             print("\n⏳ Waiting for you to complete login...")
-            input("✋ Press ENTER after you've completed the login process: ")
+            try:
+                input("✋ Press ENTER after you've completed the login process: ")
+            except EOFError:
+                print("⚠️ Non-interactive mode: proceeding without manual login confirmation")
+                self.authenticated = True
+                return True
 
             # Test authentication after manual login
             if await self.test_authentication():
@@ -583,10 +616,16 @@ class DispatchPersistentConverter:
                 self.authenticated = True
                 return True
 
-        except Exception as e:
+        except (EOFError, Exception) as e:
             print(f"❌ Authentication error: {e}")
-            print("🔧 Please complete authentication manually if needed")
-            input("Press ENTER after you've logged in: ")
+            if isinstance(e, EOFError):
+                print("⚠️ Non-interactive mode: skipping manual login")
+            else:
+                print("🔧 Please complete authentication manually if needed")
+                try:
+                    input("Press ENTER after you've logged in: ")
+                except EOFError:
+                    print("⚠️ Non-interactive mode: proceeding anyway")
             self.authenticated = True
             return True
 
@@ -605,8 +644,9 @@ class DispatchPersistentConverter:
 
                 // Remove elements by class or id (but not 'fixed' or 'sticky')
                 const keywords = [
-                    'navbar','banner','paywall','newsletter','comment','breadcrumb',
-                    'subscribe','sidebar','popup','ad','site-footer','site-info','z-scroll-to','primary-button'
+                    'navbar','banner','paywall','comment','breadcrumb',
+                    'subscribe','sidebar','popup','ad','site-footer','site-info','z-scroll-to','primary-button',
+                    'newsletter-paywall','newsletters-tab','newsletters-shelf','accordion_newsletters'
                 ];
                 keywords.forEach(word => {
                     document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => e.remove());
@@ -821,6 +861,13 @@ class DispatchPersistentConverter:
 
                 if read_online_url:
                     print(f"🔗 Found Read Online URL: {read_online_url}")
+
+                    # Cross-script dedup: skip if web scanner already processed this URL
+                    if not force_reprocess and self.is_url_already_processed_by_web(read_online_url):
+                        print(f"⏭️  SKIPPED - URL already processed by web scanner (cross-dedup)")
+                        skipped_count += 1
+                        continue
+
                     success = await self.convert_url_to_pdf(read_online_url, filename)
 
                     if success:
