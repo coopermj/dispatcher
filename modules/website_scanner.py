@@ -12,36 +12,47 @@ from bs4 import BeautifulSoup
 
 from config.settings import (
     DISPATCH_BASE_URL, MAX_ARTICLES, ARTICLE_AGE_LIMIT_DAYS,
-    WEBSITE_SECTIONS, SKIP_KEYWORDS, BROWSER_TIMEOUT
+    WEBSITE_SECTIONS, SKIP_KEYWORDS, BROWSER_TIMEOUT, MAX_CONCURRENT_SCANS
 )
 
 
 class WebsiteScanner:
     """Scans The Dispatch website for articles to convert"""
 
-    def __init__(self, browser_manager):
+    def __init__(self, browser_manager, tracking_manager=None):
         self.browser_manager = browser_manager
+        self.tracking_manager = tracking_manager
         self.found_articles = []
+        self.processed_urls = set()  # Cache of already-processed URLs
+        self.processed_subjects = set()  # Cache of already-processed subjects/titles
+
+        # Load processed URLs and subjects from tracking manager for early duplicate detection
+        if self.tracking_manager:
+            self.processed_urls = self.tracking_manager.get_processed_urls()
+            self.processed_subjects = self.tracking_manager.get_processed_subjects()
+            total_cached = len(self.processed_urls) + len(self.processed_subjects)
+            if total_cached:
+                print(f"📊 Loaded {len(self.processed_urls)} URLs and {len(self.processed_subjects)} titles for duplicate detection")
 
     async def scan_for_articles(self, max_articles=None):
-        """Scan The Dispatch website for articles"""
+        """Scan The Dispatch website for articles (with parallel section scanning)"""
         max_articles = max_articles or MAX_ARTICLES
 
         print(f"🌐 Scanning {DISPATCH_BASE_URL} for articles...")
         print(f"📊 Looking for up to {max_articles} articles in sections: {', '.join(WEBSITE_SECTIONS)}")
+        print(f"⚡ Using parallel scanning with up to {MAX_CONCURRENT_SCANS} concurrent requests")
 
         all_articles = []
 
-        # Scan main homepage first
+        # Scan main homepage first (using main page)
         homepage_articles = await self.scan_homepage()
         all_articles.extend(homepage_articles)
 
-        # Scan specific sections
-        for section in WEBSITE_SECTIONS:
-            if len(all_articles) >= max_articles:
-                break
-            section_articles = await self.scan_section(section)
-            all_articles.extend(section_articles)
+        # Scan specific sections in parallel
+        if WEBSITE_SECTIONS:
+            section_results = await self.scan_sections_parallel(WEBSITE_SECTIONS)
+            for section_articles in section_results:
+                all_articles.extend(section_articles)
 
         # Remove duplicates based on URL
         seen_urls = set()
@@ -59,6 +70,65 @@ class WebsiteScanner:
 
         print(f"✅ Found {len(self.found_articles)} articles to process")
         return self.found_articles
+
+    async def scan_sections_parallel(self, sections):
+        """Scan multiple sections in parallel using separate browser pages"""
+        print(f"⚡ Scanning {len(sections)} sections in parallel...")
+
+        # Create a semaphore to limit concurrency
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCANS)
+
+        async def scan_with_semaphore(section):
+            async with semaphore:
+                return await self.scan_section_with_new_page(section)
+
+        # Create tasks for all sections
+        tasks = [scan_with_semaphore(section) for section in sections]
+
+        # Execute in parallel and gather results
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results, handling any errors
+        section_articles = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"❌ Error scanning section {sections[i]}: {result}")
+                section_articles.append([])
+            else:
+                section_articles.append(result)
+
+        return section_articles
+
+    async def scan_section_with_new_page(self, section):
+        """Scan a specific section using a new browser page"""
+        page = None
+        try:
+            section_url = f"{DISPATCH_BASE_URL}/{section}"
+            print(f"🔍 Scanning section: {section_url}")
+
+            # Create a new page for this section
+            page = await self.browser_manager.create_new_page()
+            if not page:
+                # Fallback to main page if can't create new one
+                return await self.scan_section(section)
+
+            await page.goto(section_url, timeout=BROWSER_TIMEOUT)
+            await asyncio.sleep(3)
+
+            content = await page.content()
+            soup = BeautifulSoup(content, 'html.parser')
+
+            articles = self.extract_articles_from_soup(soup, section)
+            print(f"📄 Found {len(articles)} articles in {section}")
+            return articles
+
+        except Exception as e:
+            print(f"❌ Error scanning section {section}: {e}")
+            return []
+        finally:
+            # Clean up the page
+            if page:
+                await self.browser_manager.close_page(page)
 
     async def scan_homepage(self):
         """Scan the homepage for articles"""
@@ -271,11 +341,23 @@ class WebsiteScanner:
         return ""
 
     def filter_articles(self, articles):
-        """Filter articles by age and keywords"""
+        """Filter articles by age, keywords, and already-processed URLs/titles"""
         filtered = []
+        skipped_duplicates = 0
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=ARTICLE_AGE_LIMIT_DAYS)
 
         for article in articles:
+            # Skip if already processed by URL (early duplicate detection)
+            if article['url'] in self.processed_urls:
+                skipped_duplicates += 1
+                continue
+
+            # Skip if already processed by title (backward compatible with old tracking data)
+            title_normalized = article['title'].lower().strip()
+            if title_normalized in self.processed_subjects:
+                skipped_duplicates += 1
+                continue
+
             # Skip if title contains skip keywords
             title_lower = article['title'].lower()
             if any(keyword in title_lower for keyword in SKIP_KEYWORDS):
@@ -299,6 +381,9 @@ class WebsiteScanner:
                 continue
 
             filtered.append(article)
+
+        if skipped_duplicates > 0:
+            print(f"⏭️  Skipped {skipped_duplicates} already-processed articles (early duplicate detection)")
 
         return filtered
 

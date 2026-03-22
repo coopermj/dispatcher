@@ -1,0 +1,52 @@
+{
+  "1c073a8f1461e4ceab26ef0a3ca9a315": {
+    "subject": "The Best Postwar Westerns",
+    "sender": "Dispatch Culture <hello@newsletter.thedispatch.com>",
+    "date": "Sat, 21 Mar 2026 11:01:52 +0000",
+    "message_id": "19d1010a59cd4158",
+    "processed_date": "2026-03-21T20:32:14.246794",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_The-Best-Postwar-Westerns.pdf",
+    "remarkable_uploaded": false,
+    "fingerprint": "1c073a8f1461e4ceab26ef0a3ca9a315"
+  },
+  "264d5e2d8ba1c8ec568793dc090a4358": {
+    "subject": "The Iran War Is What Trumpism Looks Like",
+    "sender": "Jonah Goldberg <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 20 Mar 2026 21:49:21 +0000",
+    "message_id": "19d0d3c491af095b",
+    "processed_date": "2026-03-21T20:32:24.399324",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_The-Iran-War-Is-What-Trumpism-Looks-Like.pdf",
+    "remarkable_uploaded": false,
+    "fingerprint": "264d5e2d8ba1c8ec568793dc090a4358"
+  },
+  "f55286092191999e33b62e5407c66403": {
+    "subject": "The Leopard Tamer",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 20 Mar 2026 21:48:57 +0000",
+    "message_id": "19d0d3915793f240",
+    "processed_date": "2026-03-21T20:34:06.767449",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_The-Leopard-Tamer.pdf",
+    "remarkable_uploaded": false,
+    "fingerprint": "f55286092191999e33b62e5407c66403"
+  },
+  "6315dc7cedf3f3595464f26b4ba18cf1": {
+    "subject": "Dispatch Politics Roundup: Reporting from the Gator State",
+    "sender": "Dispatch Politics <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 20 Mar 2026 19:09:43 +0000",
+    "message_id": "19d0ca8bbefcbfa6",
+    "processed_date": "2026-03-21T20:34:18.317270",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_004_Dispatch-Politics-Roundup-Reporting-from-the-Gator-State.pdf",
+    "remarkable_uploaded": false,
+    "fingerprint": "6315dc7cedf3f3595464f26b4ba18cf1"
+  },
+  "c891dbf5c687adc835f68562b6c3c3ed": {
+    "subject": "Is \u2018Voice of America\u2019 Over?",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 20 Mar 2026 10:49:33 +0000",
+    "message_id": "19d0add704d1f662",
+    "processed_date": "2026-03-21T20:34:32.135185",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_005_Is-Voice-of-America-Over.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "c891dbf5c687adc835f68562b6c3c3ed"
+  }
+}

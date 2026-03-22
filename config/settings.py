@@ -99,6 +99,38 @@ SKIP_LINK_PATTERNS = [p.strip() for p in os.getenv('SKIP_LINK_PATTERNS',
 LINKED_PAGE_TIMEOUT = get_int_env('LINKED_PAGE_TIMEOUT', 15)
 REPLACE_LINKS_WITH_PDF_REFS = get_bool_env('REPLACE_LINKS_WITH_PDF_REFS', True)
 
+# Parallel processing settings
+MAX_CONCURRENT_SCANS = get_int_env('MAX_CONCURRENT_SCANS', 3)
+MAX_CONCURRENT_CONVERSIONS = get_int_env('MAX_CONCURRENT_CONVERSIONS', 3)
+MAX_CONCURRENT_LINKS = get_int_env('MAX_CONCURRENT_LINKS', 3)
+
+# Skip domains file - domains to skip when following links
+SKIP_DOMAINS_FILE = Path(os.getenv('SKIP_DOMAINS_FILE', 'skip_domains.txt'))
+if not SKIP_DOMAINS_FILE.is_absolute():
+    SKIP_DOMAINS_FILE = BASE_DIR / SKIP_DOMAINS_FILE
+
+
+def load_skip_domains():
+    """Load skip domains from file"""
+    domains = []
+    if SKIP_DOMAINS_FILE.exists():
+        try:
+            with open(SKIP_DOMAINS_FILE, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip empty lines and comments
+                    if line and not line.startswith('#'):
+                        domains.append(line.lower())
+            print(f"✅ Loaded {len(domains)} skip domains from {SKIP_DOMAINS_FILE}")
+        except Exception as e:
+            print(f"⚠️ Error loading skip domains: {e}")
+    else:
+        print(f"📝 No skip domains file found at {SKIP_DOMAINS_FILE}")
+    return domains
+
+
+SKIP_DOMAINS = load_skip_domains()
+
 # Email search settings
 GMAIL_SEARCH_QUERY = os.getenv('GMAIL_SEARCH_QUERY', 'from:@thedispatch.com')
 DEFAULT_MAX_EMAILS = get_int_env('MAX_EMAILS', 5)

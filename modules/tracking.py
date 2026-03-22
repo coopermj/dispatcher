@@ -56,6 +56,73 @@ class TrackingManager:
         fingerprint_string = json.dumps(fingerprint_data, sort_keys=True)
         return hashlib.md5(fingerprint_string.encode()).hexdigest()
 
+    def is_url_processed(self, url):
+        """Check if a URL has been successfully processed before (for early duplicate detection)"""
+        # Check all tracked items for matching URL
+        for fingerprint, data in self.processed_emails.items():
+            if not data.get('success', False):
+                continue
+
+            # Check if the URL matches the read_online_url or is in the message_id
+            stored_url = data.get('read_online_url', '')
+            message_id = data.get('message_id', '')
+
+            # Direct URL match
+            if stored_url and stored_url == url:
+                # Verify PDF still exists
+                pdf_path = data.get('pdf_path', '')
+                if pdf_path and os.path.exists(pdf_path):
+                    return True
+
+            # Check by URL hash (website articles use this pattern)
+            url_hash = f"website_{hash(url)}"
+            if message_id == url_hash:
+                pdf_path = data.get('pdf_path', '')
+                if pdf_path and os.path.exists(pdf_path):
+                    return True
+
+        return False
+
+    def get_processed_urls(self):
+        """Get a set of all successfully processed URLs for fast lookup"""
+        processed_urls = set()
+
+        for fingerprint, data in self.processed_emails.items():
+            if not data.get('success', False):
+                continue
+
+            # Check if PDF still exists
+            pdf_path = data.get('pdf_path', '')
+            if not pdf_path or not os.path.exists(pdf_path):
+                continue
+
+            # Add the read_online_url if present
+            url = data.get('read_online_url', '')
+            if url:
+                processed_urls.add(url)
+
+        return processed_urls
+
+    def get_processed_subjects(self):
+        """Get a set of all successfully processed subjects/titles for fast lookup"""
+        processed_subjects = set()
+
+        for fingerprint, data in self.processed_emails.items():
+            if not data.get('success', False):
+                continue
+
+            # Check if PDF still exists
+            pdf_path = data.get('pdf_path', '')
+            if not pdf_path or not os.path.exists(pdf_path):
+                continue
+
+            # Add the subject if present
+            subject = data.get('subject', '')
+            if subject:
+                processed_subjects.add(subject.lower().strip())
+
+        return processed_subjects
+
     def is_email_processed(self, email_data):
         """Check if an email has been successfully processed before"""
         fingerprint = self.get_email_fingerprint(email_data)
@@ -107,6 +174,7 @@ class TrackingManager:
             'sender': email_data.get('sender', ''),
             'date': email_data.get('date', ''),
             'message_id': email_data.get('message_id', ''),
+            'read_online_url': email_data.get('read_online_url', ''),  # Store URL for duplicate detection
             'processed_date': datetime.now().isoformat(),
             'pdf_path': str(pdf_path),
             'pdf_size': file_size,
