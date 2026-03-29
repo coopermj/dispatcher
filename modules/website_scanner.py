@@ -5,6 +5,7 @@ Scans thedispatch.com for articles to convert to PDF
 """
 
 import asyncio
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
@@ -398,7 +399,7 @@ class WebsiteScanner:
             'sender': 'The Dispatch Website',
             'date': article.get('date', datetime.now()).isoformat() if article.get(
                 'date') else datetime.now().isoformat(),
-            'message_id': f"website_{hash(article['url'])}",
+            'message_id': f"website_{hashlib.md5(article['url'].encode()).hexdigest()}",
             'read_online_url': article['url'],
             'body': article.get('summary', ''),
             'raw_body': f"<a href='{article['url']}'>{article['title']}</a>",

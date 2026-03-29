@@ -48,5 +48,175 @@
     "pdf_path": "dispatch_persistent_pdfs/dispatch_005_Is-Voice-of-America-Over.pdf",
     "remarkable_uploaded": true,
     "fingerprint": "c891dbf5c687adc835f68562b6c3c3ed"
+  },
+  "b852513e8a892ca5e5ffa9659f139911": {
+    "subject": "Trump\u2019s Trade War Is Not Over",
+    "sender": "\"Kevin D. Williamson\" <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 23 Mar 2026 13:15:07 +0000",
+    "message_id": "19d1ad7808070de9",
+    "processed_date": "2026-03-23T09:19:50.702165",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_Trumps-Trade-War-Is-Not-Over.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "b852513e8a892ca5e5ffa9659f139911"
+  },
+  "ed3bca61cea33853b13528a3e55829d9": {
+    "subject": "Meloni\u2019s Plan to Remake Italy",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 23 Mar 2026 11:04:09 +0000",
+    "message_id": "19d1a627ee267f2e",
+    "processed_date": "2026-03-23T09:20:03.793505",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_Melonis-Plan-to-Remake-Italy.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "ed3bca61cea33853b13528a3e55829d9"
+  },
+  "3acec04c4ea57bdda6602f409fffe897": {
+    "subject": "A Muslim Walks Into a Yeshiva",
+    "sender": "Dispatch Faith <hello@newsletter.thedispatch.com>",
+    "date": "Sun, 22 Mar 2026 11:21:41 +0000",
+    "message_id": "19d154880bea9f16",
+    "processed_date": "2026-03-23T09:20:16.758613",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_A-Muslim-Walks-Into-a-Yeshiva.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "3acec04c4ea57bdda6602f409fffe897"
+  },
+  "8bc1e950e7879d97955a012221d27d6c": {
+    "subject": "The SAVE America Act, Explained",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 25 Mar 2026 11:00:36 +0000",
+    "message_id": "19d24a8eb4e1f345",
+    "processed_date": "2026-03-25T07:12:07.760130",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_The-SAVE-America-Act-Explained.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "8bc1e950e7879d97955a012221d27d6c"
+  },
+  "eacd57283c4d630e64af4eaeed75d271": {
+    "subject": "Blind Man\u2019s Bluff",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Tue, 24 Mar 2026 21:45:32 +0000",
+    "message_id": "19d21d06d6d6efd3",
+    "processed_date": "2026-03-25T07:12:24.651109",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_Blind-Mans-Bluff.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "eacd57283c4d630e64af4eaeed75d271"
+  },
+  "29ee1a936d1b66a4390541e061e0fe3f": {
+    "subject": "What Would Reopen the Strait of Hormuz?",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Tue, 24 Mar 2026 10:41:14 +0000",
+    "message_id": "19d1f745ac5479c0",
+    "processed_date": "2026-03-25T07:12:41.853120",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_What-Would-Reopen-the-Strait-of-Hormuz.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "29ee1a936d1b66a4390541e061e0fe3f"
+  },
+  "cb965cb3e25baa5ad5407950d8317a19": {
+    "subject": "A Quiet Place",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 23 Mar 2026 22:27:15 +0000",
+    "message_id": "19d1cd03979d8cdc",
+    "processed_date": "2026-03-25T07:12:56.683968",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_004_A-Quiet-Place.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "cb965cb3e25baa5ad5407950d8317a19"
+  },
+  "249aebd90e5adf8de48745b84f2e5653": {
+    "subject": "Trump\u2019s Immigration Reset",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Thu, 26 Mar 2026 10:58:47 +0000",
+    "message_id": "19d29d151358cf4e",
+    "processed_date": "2026-03-26T07:17:51.800285",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_Trumps-Immigration-Reset.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "249aebd90e5adf8de48745b84f2e5653"
+  },
+  "e47a346d70b5e4cec1267e606d64d021": {
+    "subject": "Two Trump Administrations, Two \u2018Trump\u2019 Economies",
+    "sender": "Jonah Goldberg <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 25 Mar 2026 22:09:08 +0000",
+    "message_id": "19d270b5df1c7de4",
+    "processed_date": "2026-03-26T07:18:05.306728",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_Two-Trump-Administrations-Two-Trump-Economies.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "e47a346d70b5e4cec1267e606d64d021"
+  },
+  "d1dc7c10b6939fe9a20c3da6a7db54ad": {
+    "subject": "The Gorilla Channel",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 25 Mar 2026 21:57:06 +0000",
+    "message_id": "19d2701c19532212",
+    "processed_date": "2026-03-26T07:18:19.879549",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_The-Gorilla-Channel.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "d1dc7c10b6939fe9a20c3da6a7db54ad"
+  },
+  "d641ccb434cce228804a7abd7577d6c9": {
+    "subject": "Europe\u2019s Rising Antisemitism",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 27 Mar 2026 10:49:11 +0000",
+    "message_id": "19d2eebf674802ca",
+    "processed_date": "2026-03-27T07:15:43.111942",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_Europes-Rising-Antisemitism.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "d641ccb434cce228804a7abd7577d6c9"
+  },
+  "a75f1161cb0c5f6ef7fb489969d186bd": {
+    "subject": "Basic Instinct",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Thu, 26 Mar 2026 22:53:14 +0000",
+    "message_id": "19d2c5b4f50195c6",
+    "processed_date": "2026-03-27T07:15:56.340612",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_Basic-Instinct.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "a75f1161cb0c5f6ef7fb489969d186bd"
+  },
+  "56133cdb281e91e77a708fd484e668e9": {
+    "subject": "Are We Approaching an Unprecedented Energy Crisis?",
+    "sender": "Dispatch Energy <hello@newsletter.thedispatch.com>",
+    "date": "Thu, 26 Mar 2026 21:07:00 +0000",
+    "message_id": "19d2bfa41e425e7d",
+    "processed_date": "2026-03-27T07:16:20.048775",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_Are-We-Approaching-an-Unprecedented-Energy-Crisis.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "56133cdb281e91e77a708fd484e668e9"
+  },
+  "d0efc60f5d0226b6f08f885d47fdf63e": {
+    "subject": "Groovy Mysteries and the Power of the Unseen",
+    "sender": "Dispatch Culture <hello@newsletter.thedispatch.com>",
+    "date": "Sat, 28 Mar 2026 11:01:58 +0000",
+    "message_id": "19d341ba19216ed5",
+    "processed_date": "2026-03-28T07:05:27.137861",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_001_Groovy-Mysteries-and-the-Power-of-the-Unseen.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "d0efc60f5d0226b6f08f885d47fdf63e"
+  },
+  "1cce021658a37b3dc8c2ec76c558c961": {
+    "subject": "The Obvious Scapegoat",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 27 Mar 2026 22:42:41 +0000",
+    "message_id": "19d31787337ced36",
+    "processed_date": "2026-03-28T07:05:40.900500",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_002_The-Obvious-Scapegoat.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "1cce021658a37b3dc8c2ec76c558c961"
+  },
+  "e80682a7543770fb3f0eba4dbb3a2794": {
+    "subject": "The Partisan Fog of a Trump-Led War",
+    "sender": "Jonah Goldberg <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 27 Mar 2026 22:13:11 +0000",
+    "message_id": "19d315ccb39f7460",
+    "processed_date": "2026-03-28T07:05:54.413782",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_003_The-Partisan-Fog-of-a-Trump-Led-War.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "e80682a7543770fb3f0eba4dbb3a2794"
+  },
+  "4719b8aa0bb625f55932c4aaa0582f82": {
+    "subject": "Dispatch Politics Roundup: Spring of Uncertainty",
+    "sender": "Dispatch Politics <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 27 Mar 2026 18:00:27 +0000",
+    "message_id": "19d307486302f187",
+    "processed_date": "2026-03-28T07:06:08.887319",
+    "pdf_path": "dispatch_persistent_pdfs/dispatch_004_Dispatch-Politics-Roundup-Spring-of-Uncertainty.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "4719b8aa0bb625f55932c4aaa0582f82"
   }
 }

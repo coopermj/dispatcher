@@ -6,6 +6,8 @@ Main entry point for the application
 
 import argparse
 import asyncio
+import hashlib
+import json
 import time
 import traceback
 from datetime import datetime
@@ -437,7 +439,7 @@ class DispatchConverter:
         content_data = {
             'subject': subject,
             'read_online_url': url,
-            'message_id': f"website_{hash(url)}",
+            'message_id': f"website_{hashlib.md5(url.encode()).hexdigest()}",
             'sender': 'CLI',
             'date': datetime.now().isoformat(),
             'body': '',
@@ -454,6 +456,62 @@ class DispatchConverter:
             effective_mode='website'
         )
 
+    def retry_failed_uploads(self):
+        """Upload PDFs that were converted but never made it to reMarkable."""
+        if not self.remarkable_manager.is_available():
+            print("❌ ReMarkable not available — cannot retry uploads")
+            return
+
+        retried = 0
+        succeeded = 0
+
+        project_root = Path(__file__).parent
+
+        # --- Modular tracking file (dispatch_tracking.json) ---
+        for fingerprint, entry in list(self.tracking_manager.processed_emails.items()):
+            if entry.get('remarkable_uploaded'):
+                continue
+            pdf_path = Path(entry.get('pdf_path', ''))
+            if not pdf_path.is_absolute():
+                pdf_path = project_root / pdf_path
+            if not pdf_path.exists():
+                continue
+            print(f"\n📤 Retrying upload: {entry.get('subject', '')[:60]}")
+            retried += 1
+            if self.remarkable_manager.upload_pdf(pdf_path):
+                self.tracking_manager.processed_emails[fingerprint]['remarkable_uploaded'] = True
+                succeeded += 1
+        if retried:
+            self.tracking_manager.save_tracking_data()
+
+        # --- Email converter tracking file (dispatch_email_tracking.json) ---
+        email_tracking_path = Path(__file__).parent / 'dispatch_email_tracking.json'
+        if email_tracking_path.exists():
+            with open(email_tracking_path, 'r') as f:
+                email_tracking = json.load(f)
+
+            email_retried = 0
+            for fingerprint, entry in email_tracking.items():
+                if entry.get('remarkable_uploaded'):
+                    continue
+                pdf_path = Path(entry.get('pdf_path', ''))
+                if not pdf_path.is_absolute():
+                    pdf_path = project_root / pdf_path
+                if not pdf_path.exists():
+                    continue
+                print(f"\n📤 Retrying email upload: {entry.get('subject', '')[:60]}")
+                email_retried += 1
+                retried += 1
+                if self.remarkable_manager.upload_pdf(pdf_path):
+                    entry['remarkable_uploaded'] = True
+                    succeeded += 1
+
+            if email_retried:
+                with open(email_tracking_path, 'w') as f:
+                    json.dump(email_tracking, f, indent=2)
+
+        print(f"\n✅ Retry complete: {succeeded}/{retried} uploaded successfully")
+
     async def cleanup(self):
         """Cleanup resources"""
         await self.browser_manager.close_browser_session()
@@ -466,11 +524,18 @@ async def main():
                         help='Convert a specific URL to PDF directly (skips scanning)')
     parser.add_argument('--skip-email', action='store_true',
                         help='Skip the email converter step')
+    parser.add_argument('--retry-uploads', action='store_true',
+                        help='Re-upload PDFs that were converted but never uploaded to reMarkable')
     args = parser.parse_args()
 
     try:
         # Create converter instance
         converter = DispatchConverter()
+
+        # --retry-uploads mode: upload PDFs that failed to reach reMarkable
+        if args.retry_uploads:
+            converter.retry_failed_uploads()
+            return
 
         # Print startup banner
         converter.print_startup_banner()

@@ -13,6 +13,7 @@ import base64
 import pickle
 import asyncio
 import json
+import time
 import traceback
 import subprocess
 import shutil
@@ -224,23 +225,31 @@ class DispatchPersistentConverter:
             mkdir_result = subprocess.run([self.rmapi_path, 'mkdir', remarkable_folder],
                                           capture_output=True, text=True, timeout=30)
 
-            # mkdir will fail if folder already exists, which is fine
-            if mkdir_result.returncode != 0 and "already exists" not in mkdir_result.stderr:
+            # mkdir returns 0 if the folder was just created, non-zero if it already exists
+            if mkdir_result.returncode == 0:
+                # Newly created folder — wait for it to sync to the reMarkable cloud
+                # before attempting put, otherwise the upload will fail with "not found"
+                print(f"⏳ New folder created, waiting 10s for reMarkable cloud sync...")
+                time.sleep(10)
+            elif "already exists" not in (mkdir_result.stderr + mkdir_result.stdout).lower():
                 print(f"⚠️ mkdir result: {mkdir_result.stderr}")
 
-            # Upload the file to the News folder
+            # Upload the file to the News folder (retry up to 3 times for transient failures)
             upload_cmd = [self.rmapi_path, 'put', str(pdf_path), remarkable_folder]
             print(f"🔧 Running: {' '.join(upload_cmd)}")
 
-            result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
+            for attempt in range(1, 4):
+                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode == 0:
+                    print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{remarkable_folder}")
+                    return True
+                if attempt < 3:
+                    print(f"⚠️ Upload attempt {attempt} failed: {result.stderr.strip()} — retrying in 5s...")
+                    time.sleep(5)
 
-            if result.returncode == 0:
-                print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{remarkable_folder}")
-                return True
-            else:
-                print(f"❌ Upload failed: {result.stderr}")
-                print(f"📤 stdout: {result.stdout}")
-                return False
+            print(f"❌ Upload failed after 3 attempts: {result.stderr}")
+            print(f"📤 stdout: {result.stdout}")
+            return False
 
         except subprocess.TimeoutExpired:
             print("❌ Upload command timed out")
@@ -811,8 +820,9 @@ class DispatchPersistentConverter:
                 await self.close_browser_session()
                 return
 
-            # Step 4: Create output directory
-            Path(output_dir).mkdir(exist_ok=True)
+            # Step 4: Create output directory (resolve to absolute so stored paths are portable)
+            output_path = Path(output_dir).resolve()
+            output_path.mkdir(exist_ok=True)
 
             # Step 5: Get email list
             messages = self.search_dispatch_emails(max_emails)
@@ -852,9 +862,9 @@ class DispatchPersistentConverter:
                     skipped_count += 1
                     continue
 
-                # Create filename
+                # Create filename (absolute path so tracking entries are portable)
                 safe_subject = self.sanitize_filename(email_data['subject'])
-                filename = f"{output_dir}/dispatch_{i:03d}_{safe_subject}.pdf"
+                filename = str(output_path / f"dispatch_{i:03d}_{safe_subject}.pdf")
 
                 # Get Read Online URL
                 read_online_url = self.extract_read_online_url(email_data)
@@ -917,14 +927,15 @@ class DispatchPersistentConverter:
 
 async def run_email_converter():
     """Entry point for calling from main.py or other external callers"""
+    from config.settings import DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE, DEFAULT_FORCE_REPROCESS
     converter = DispatchPersistentConverter(
-        rmapi_path='~/rmapi/rmapi'
+        rmapi_path=DEFAULT_RMAPI_PATH
     )
     await converter.process_emails(
         output_dir='dispatch_persistent_pdfs',
-        max_emails=5,
-        upload_to_remarkable=True,
-        force_reprocess=False
+        max_emails=DEFAULT_MAX_EMAILS,
+        upload_to_remarkable=DEFAULT_UPLOAD_TO_REMARKABLE,
+        force_reprocess=DEFAULT_FORCE_REPROCESS
     )
 
 

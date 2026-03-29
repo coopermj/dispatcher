@@ -75,7 +75,7 @@ class TrackingManager:
                     return True
 
             # Check by URL hash (website articles use this pattern)
-            url_hash = f"website_{hash(url)}"
+            url_hash = f"website_{hashlib.md5(url.encode()).hexdigest()}"
             if message_id == url_hash:
                 pdf_path = data.get('pdf_path', '')
                 if pdf_path and os.path.exists(pdf_path):

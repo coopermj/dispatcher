@@ -5,6 +5,7 @@ ReMarkable integration using rmapi
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from config.settings import DEFAULT_RMAPI_PATH, REMARKABLE_FOLDER, RMAPI_TIMEOUT
@@ -51,17 +52,25 @@ class ReMarkableManager:
         return self.available
 
     def create_folder(self, folder_name):
-        """Create a folder on ReMarkable device"""
+        """Create a folder on ReMarkable device. Returns True if folder exists/was created."""
         try:
             print(f"📁 Checking/creating folder: {folder_name}")
             mkdir_result = subprocess.run([self.rmapi_path, 'mkdir', folder_name],
                                           capture_output=True, text=True, timeout=30)
 
-            # mkdir will fail if folder already exists, which is fine
-            if mkdir_result.returncode != 0 and "already exists" not in mkdir_result.stderr:
+            if mkdir_result.returncode == 0:
+                # Newly created folder — wait for it to sync to the reMarkable cloud
+                # before uploading, otherwise the subsequent put will fail with "not found"
+                print(f"⏳ New folder created, waiting 10s for reMarkable cloud sync...")
+                time.sleep(10)
+                return True
+
+            # Non-zero return is fine if the folder already exists
+            error_output = (mkdir_result.stderr + mkdir_result.stdout).lower()
+            if "already exists" not in error_output:
                 print(f"⚠️ mkdir result: {mkdir_result.stderr}")
                 return False
-            
+
             return True
         except Exception as e:
             print(f"❌ Error creating folder: {e}")
@@ -88,19 +97,22 @@ class ReMarkableManager:
                 print(f"❌ Failed to create/verify folder: {folder_name}")
                 return False
 
-            # Upload the file to the specified folder
+            # Upload the file to the specified folder (retry up to 3 times for transient failures)
             upload_cmd = [self.rmapi_path, 'put', str(pdf_path), folder_name]
             print(f"🔧 Running: {' '.join(upload_cmd)}")
 
-            result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=RMAPI_TIMEOUT)
+            for attempt in range(1, 4):
+                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=RMAPI_TIMEOUT)
+                if result.returncode == 0:
+                    print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{folder_name}")
+                    return True
+                if attempt < 3:
+                    print(f"⚠️ Upload attempt {attempt} failed: {result.stderr.strip()} — retrying in 5s...")
+                    time.sleep(5)
 
-            if result.returncode == 0:
-                print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{folder_name}")
-                return True
-            else:
-                print(f"❌ Upload failed: {result.stderr}")
-                print(f"📤 stdout: {result.stdout}")
-                return False
+            print(f"❌ Upload failed after 3 attempts: {result.stderr}")
+            print(f"📤 stdout: {result.stdout}")
+            return False
 
         except subprocess.TimeoutExpired:
             print("❌ Upload command timed out")
