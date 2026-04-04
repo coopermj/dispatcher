@@ -128,7 +128,12 @@ class DispatchPersistentConverter:
     def is_email_processed(self, email_data):
         """Check if an email has been processed before"""
         fingerprint = self.get_email_fingerprint(email_data)
-        return fingerprint in self.processed_emails
+        if fingerprint not in self.processed_emails:
+            return False
+        # Permanently expired — never re-gather or re-send
+        if self.processed_emails[fingerprint].get('remarkable_expired'):
+            return True
+        return True
 
     def mark_email_processed(self, email_data, pdf_path, remarkable_uploaded=False):
         """Mark an email as processed and store metadata"""
@@ -169,6 +174,9 @@ class DispatchPersistentConverter:
         to_remove = []
 
         for fingerprint, data in self.processed_emails.items():
+            # Never remove entries pruned from reMarkable — they block re-gathering
+            if data.get('remarkable_expired'):
+                continue
             pdf_path = data.get('pdf_path', '')
             if pdf_path and not os.path.exists(pdf_path):
                 to_remove.append(fingerprint)

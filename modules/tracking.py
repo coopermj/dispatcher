@@ -60,13 +60,20 @@ class TrackingManager:
         """Check if a URL has been successfully processed before (for early duplicate detection)"""
         # Check all tracked items for matching URL
         for fingerprint, data in self.processed_emails.items():
+            stored_url = data.get('read_online_url', '')
+            message_id = data.get('message_id', '')
+            url_hash = f"website_{hashlib.md5(url.encode()).hexdigest()}"
+
+            # Permanently expired entries always count as processed — never re-send
+            if data.get('remarkable_expired'):
+                if (stored_url and stored_url == url) or message_id == url_hash:
+                    return True
+                continue
+
             if not data.get('success', False):
                 continue
 
             # Check if the URL matches the read_online_url or is in the message_id
-            stored_url = data.get('read_online_url', '')
-            message_id = data.get('message_id', '')
-
             # Direct URL match
             if stored_url and stored_url == url:
                 # Verify PDF still exists
@@ -75,7 +82,6 @@ class TrackingManager:
                     return True
 
             # Check by URL hash (website articles use this pattern)
-            url_hash = f"website_{hashlib.md5(url.encode()).hexdigest()}"
             if message_id == url_hash:
                 pdf_path = data.get('pdf_path', '')
                 if pdf_path and os.path.exists(pdf_path):
@@ -88,6 +94,13 @@ class TrackingManager:
         processed_urls = set()
 
         for fingerprint, data in self.processed_emails.items():
+            # Permanently expired entries are always treated as processed
+            if data.get('remarkable_expired'):
+                url = data.get('read_online_url', '')
+                if url:
+                    processed_urls.add(url)
+                continue
+
             if not data.get('success', False):
                 continue
 
@@ -130,6 +143,10 @@ class TrackingManager:
 
         if not processed_info:
             return False
+
+        # Permanently expired — treat as processed, never re-gather or re-send
+        if processed_info.get('remarkable_expired'):
+            return True
 
         # Only consider it processed if it was successful
         if not processed_info.get('success', False):
@@ -215,6 +232,10 @@ class TrackingManager:
         to_remove = []
 
         for fingerprint, data in self.processed_emails.items():
+            # Never remove entries pruned from reMarkable — they block re-gathering
+            if data.get('remarkable_expired'):
+                continue
+
             should_remove = False
 
             # Remove if not marked as successful

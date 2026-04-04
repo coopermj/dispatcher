@@ -471,6 +471,8 @@ class DispatchConverter:
         for fingerprint, entry in list(self.tracking_manager.processed_emails.items()):
             if entry.get('remarkable_uploaded'):
                 continue
+            if entry.get('remarkable_expired'):
+                continue
             pdf_path = Path(entry.get('pdf_path', ''))
             if not pdf_path.is_absolute():
                 pdf_path = project_root / pdf_path
@@ -493,6 +495,8 @@ class DispatchConverter:
             email_retried = 0
             for fingerprint, entry in email_tracking.items():
                 if entry.get('remarkable_uploaded'):
+                    continue
+                if entry.get('remarkable_expired'):
                     continue
                 pdf_path = Path(entry.get('pdf_path', ''))
                 if not pdf_path.is_absolute():

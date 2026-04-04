@@ -1,0 +1,9 @@
+# Domains to skip when following links
+# One domain per line (without http:// or www.)
+# Lines starting with # are comments
+
+nytimes.com
+wsj.com
+washingtonpost.com
+ft.com
+economist.com

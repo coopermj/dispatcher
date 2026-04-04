@@ -218,5 +218,175 @@
     "pdf_path": "dispatch_persistent_pdfs/dispatch_004_Dispatch-Politics-Roundup-Spring-of-Uncertainty.pdf",
     "remarkable_uploaded": true,
     "fingerprint": "4719b8aa0bb625f55932c4aaa0582f82"
+  },
+  "8aedff08ca52d9ec83ecf95000256a1d": {
+    "subject": "The Betrayal of Judas",
+    "sender": "Dispatch Faith <hello@newsletter.thedispatch.com>",
+    "date": "Sun, 29 Mar 2026 11:10:18 +0000",
+    "message_id": "19d394b698f5ea30",
+    "processed_date": "2026-03-29T20:41:00.378747",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_The-Betrayal-of-Judas.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "8aedff08ca52d9ec83ecf95000256a1d"
+  },
+  "32df93c7b5050fbe0c5635f6959f110e": {
+    "subject": "Our Best Stuff on the SAVE America Act",
+    "sender": "The Dispatch Weekly <hello@newsletter.thedispatch.com>",
+    "date": "Sat, 28 Mar 2026 12:10:42 +0000",
+    "message_id": "19d345c578f6a770",
+    "processed_date": "2026-03-29T20:41:24.621419",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_002_Our-Best-Stuff-on-the-SAVE-America-Act.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "32df93c7b5050fbe0c5635f6959f110e"
+  },
+  "042a1338c4bf1ddd4f26f41961ac171d": {
+    "subject": "Just How Bad Is Social Media for Kids?",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 30 Mar 2026 11:00:56 +0000",
+    "message_id": "19d3e6b38c31117e",
+    "processed_date": "2026-03-30T07:34:13.996469",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_Just-How-Bad-Is-Social-Media-for-Kids.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "042a1338c4bf1ddd4f26f41961ac171d"
+  },
+  "3be3983967103479b3bbe9960f1064ad": {
+    "subject": "Fast, Cheap, or Good",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 30 Mar 2026 22:25:47 +0000",
+    "message_id": "19d40dbddf517896",
+    "processed_date": "2026-03-31T06:55:30.664632",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_Fast-Cheap-or-Good.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "3be3983967103479b3bbe9960f1064ad"
+  },
+  "78980da9e97f52f91d860ca1cb7c48fb": {
+    "subject": "The Welfare-Warfare State, Redux",
+    "sender": "\"Kevin D. Williamson\" <hello@newsletter.thedispatch.com>",
+    "date": "Mon, 30 Mar 2026 13:10:09 +0000",
+    "message_id": "19d3eddbdc877dc2",
+    "processed_date": "2026-03-31T06:55:56.236789",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_002_The-Welfare-Warfare-State-Redux.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "78980da9e97f52f91d860ca1cb7c48fb"
+  },
+  "63ad4e966bb11d1d895653f1f6dd9909": {
+    "subject": "Who Is Actually Ruling Iran?",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Tue, 31 Mar 2026 11:00:21 +0000",
+    "message_id": "19d438eb49ec4cef",
+    "processed_date": "2026-03-31T07:19:42.897582",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_Who-Is-Actually-Ruling-Iran.pdf",
+    "remarkable_uploaded": false,
+    "fingerprint": "63ad4e966bb11d1d895653f1f6dd9909"
+  },
+  "108bd711cc0aec737cba44ccbc10758b": {
+    "subject": "Baseball\u2019s Big Comeback",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 01 Apr 2026 10:43:29 +0000",
+    "message_id": "19d48a5db7e622b5",
+    "processed_date": "2026-04-01T07:22:27.859489",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_Baseballs-Big-Comeback.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "108bd711cc0aec737cba44ccbc10758b"
+  },
+  "a64670f46c492e96169d4cef8af33cc8": {
+    "subject": "White Power",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Tue, 31 Mar 2026 22:11:36 +0000",
+    "message_id": "19d45f529ddda6df",
+    "processed_date": "2026-04-01T07:22:53.218774",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_002_White-Power.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "a64670f46c492e96169d4cef8af33cc8"
+  },
+  "50dd6a366d2e5fed6bdac4399d0d83dd": {
+    "subject": "Carry On, Patriots",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 01 Apr 2026 22:05:54 +0000",
+    "message_id": "19d4b15e86d78d6e",
+    "processed_date": "2026-04-02T06:58:28.759264",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_Carry-On-Patriots.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "50dd6a366d2e5fed6bdac4399d0d83dd"
+  },
+  "3dbcfab023b1dd17e89d561bb68140ae": {
+    "subject": "What the No Kings Protests and Tea Parties Have in Common",
+    "sender": "Jonah Goldberg <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 01 Apr 2026 21:53:34 +0000",
+    "message_id": "19d4b0ae29acd3ff",
+    "processed_date": "2026-04-02T06:58:53.024132",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_002_What-the-No-Kings-Protests-and-Tea-Parties-Have-in-Common.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "3dbcfab023b1dd17e89d561bb68140ae"
+  },
+  "ecaf1a9931a14cbea39d131f85f87309": {
+    "subject": "Trump\u2019s Other Tariff",
+    "sender": "Scott Lincicome <hello@newsletter.thedispatch.com>",
+    "date": "Wed, 01 Apr 2026 18:34:39 +0000",
+    "message_id": "19d4a54bd14ed3e7",
+    "processed_date": "2026-04-02T06:59:16.920988",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_003_Trumps-Other-Tariff.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "ecaf1a9931a14cbea39d131f85f87309"
+  },
+  "1182459838e450d32fe90dce93975a19": {
+    "subject": "The Birthright Citizenship Case",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Thu, 02 Apr 2026 10:58:28 +0000",
+    "message_id": "19d4dd9c5ad604bc",
+    "processed_date": "2026-04-02T07:26:28.310201",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_The-Birthright-Citizenship-Case.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "1182459838e450d32fe90dce93975a19"
+  },
+  "f615acfff1cb0e9cdd4d115cd79a6867": {
+    "subject": "The Rugby Match Drink-Up",
+    "sender": "Dispatch Culture <hello@newsletter.thedispatch.com>",
+    "date": "Sat, 04 Apr 2026 11:02:06 +0000",
+    "message_id": "19d5829c59e16bb0",
+    "processed_date": "2026-04-04T07:29:36.963460",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_001_The-Rugby-Match-Drink-Up.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "f615acfff1cb0e9cdd4d115cd79a6867"
+  },
+  "51f5c8f8637b923fc39cd2ef8fba3d8f": {
+    "subject": "Man, Sin, and the Modern Lens",
+    "sender": "Jonah Goldberg <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 03 Apr 2026 22:37:45 +0000",
+    "message_id": "19d5580e72d406c1",
+    "processed_date": "2026-04-04T07:29:59.782971",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_002_Man-Sin-and-the-Modern-Lens.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "51f5c8f8637b923fc39cd2ef8fba3d8f"
+  },
+  "c8379a6ef63bc48045a0edd6a3d7f5d1": {
+    "subject": "Firing Line",
+    "sender": "Nick Catoggio <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 03 Apr 2026 22:37:09 +0000",
+    "message_id": "19d557e3dd3e03c3",
+    "processed_date": "2026-04-04T07:30:22.435486",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_003_Firing-Line.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "c8379a6ef63bc48045a0edd6a3d7f5d1"
+  },
+  "bd68a2faadc173b1be863d91aeb66f7f": {
+    "subject": "Dispatch Politics Roundup: Could Congress Take Action on Housing?",
+    "sender": "Dispatch Politics <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 03 Apr 2026 17:31:58 +0000",
+    "message_id": "19d54685aa9bfc29",
+    "processed_date": "2026-04-04T07:30:46.844453",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_004_Dispatch-Politics-Roundup-Could-Congress-Take-Action-on-Housing.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "bd68a2faadc173b1be863d91aeb66f7f"
+  },
+  "85ca7b385ed9b15cdaea4643fb371e9e": {
+    "subject": "March\u2019s Record Heat Wave",
+    "sender": "The Morning Dispatch <hello@newsletter.thedispatch.com>",
+    "date": "Fri, 03 Apr 2026 10:51:04 +0000",
+    "message_id": "19d52f9818877631",
+    "processed_date": "2026-04-04T07:31:09.751480",
+    "pdf_path": "/Users/micahcooper/PycharmProjects/dispatchweb/dispatch_persistent_pdfs/dispatch_005_Marchs-Record-Heat-Wave.pdf",
+    "remarkable_uploaded": true,
+    "fingerprint": "85ca7b385ed9b15cdaea4643fb371e9e"
   }
 }

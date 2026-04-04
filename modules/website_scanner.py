@@ -25,15 +25,12 @@ class WebsiteScanner:
         self.tracking_manager = tracking_manager
         self.found_articles = []
         self.processed_urls = set()  # Cache of already-processed URLs
-        self.processed_subjects = set()  # Cache of already-processed subjects/titles
 
-        # Load processed URLs and subjects from tracking manager for early duplicate detection
+        # Load processed URLs from tracking manager for early duplicate detection
         if self.tracking_manager:
             self.processed_urls = self.tracking_manager.get_processed_urls()
-            self.processed_subjects = self.tracking_manager.get_processed_subjects()
-            total_cached = len(self.processed_urls) + len(self.processed_subjects)
-            if total_cached:
-                print(f"📊 Loaded {len(self.processed_urls)} URLs and {len(self.processed_subjects)} titles for duplicate detection")
+            if self.processed_urls:
+                print(f"📊 Loaded {len(self.processed_urls)} URLs for duplicate detection")
 
     async def scan_for_articles(self, max_articles=None):
         """Scan The Dispatch website for articles (with parallel section scanning)"""
@@ -342,7 +339,7 @@ class WebsiteScanner:
         return ""
 
     def filter_articles(self, articles):
-        """Filter articles by age, keywords, and already-processed URLs/titles"""
+        """Filter articles by age, keywords, and already-processed URLs"""
         filtered = []
         skipped_duplicates = 0
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=ARTICLE_AGE_LIMIT_DAYS)
@@ -350,12 +347,6 @@ class WebsiteScanner:
         for article in articles:
             # Skip if already processed by URL (early duplicate detection)
             if article['url'] in self.processed_urls:
-                skipped_duplicates += 1
-                continue
-
-            # Skip if already processed by title (backward compatible with old tracking data)
-            title_normalized = article['title'].lower().strip()
-            if title_normalized in self.processed_subjects:
                 skipped_duplicates += 1
                 continue
 
