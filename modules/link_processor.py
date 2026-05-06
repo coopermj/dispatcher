@@ -185,6 +185,7 @@ class LinkProcessor:
             # Skip link replacement - it causes too many navigation issues
             print(f"🔗 Creating PDFs for {len(linked_pages)} linked pages...")
             page_titles = ["Main Article"]
+            page_urls = [article_url]
             for i, page_info in enumerate(linked_pages, 2):
                 page_pdf = temp_dir / f"page_{i}_{self.sanitize_filename(page_info['title'])}.pdf"
                 print(f"🔗 [{i-1}/{len(linked_pages)}] Creating PDF for: {page_info['title'][:50]}...")
@@ -200,6 +201,7 @@ class LinkProcessor:
                             print(f"    ✅ PDF created: {size} bytes")
                             pdf_pages.append(str(page_pdf))
                             page_titles.append(page_info.get('title', 'Linked Article'))
+                            page_urls.append(page_info['url'])
                         else:
                             print(f"    ⚠️ PDF too small ({size} bytes), likely error page - skipping")
                             page_pdf.unlink(missing_ok=True)
@@ -213,7 +215,7 @@ class LinkProcessor:
             # Step 5: Merge all PDFs with bookmarks
             if len(pdf_pages) > 1:
                 print(f"🔀 Attempting to merge {len(pdf_pages)} PDFs...")
-                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=page_titles)
+                success = await self.merge_pdfs(pdf_pages, output_filename, page_titles=page_titles, page_urls=page_urls)
 
                 if success and Path(output_filename).exists():
                     final_size = Path(output_filename).stat().st_size
@@ -896,7 +898,7 @@ class LinkProcessor:
         filename = re.sub(r'[-\s]+', '-', filename)
         return filename[:50]  # Limit length
 
-    async def merge_pdfs(self, pdf_files, output_filename, page_titles=None):
+    async def merge_pdfs(self, pdf_files, output_filename, page_titles=None, page_urls=None):
         """Merge multiple PDF files into one with bookmarks and internal links"""
         print(f"🔀 Attempting to merge {len(pdf_files)} PDF files...")
 
@@ -944,7 +946,8 @@ class LinkProcessor:
                         bookmark_info.append({
                             'title': title,
                             'start_page': page_number,
-                            'num_pages': num_pages
+                            'num_pages': num_pages,
+                            'url': page_urls[i] if page_urls and i < len(page_urls) else ''
                         })
 
                         merged_count += 1
@@ -1015,102 +1018,97 @@ class LinkProcessor:
             traceback.print_exc()
             return False
 
+    @staticmethod
+    def _normalize_url(url):
+        """Strip query string, fragment, and trailing slash for comparison."""
+        return url.split('?')[0].split('#')[0].rstrip('/')
+
     async def _add_internal_links(self, pdf_path, bookmark_info):
-        """Add internal link annotations to the first page pointing to each section"""
+        """Rewrite URI link annotations that point to included articles as internal GoTo links."""
         if len(bookmark_info) <= 1:
             print("📑 Only one section, no internal links needed")
+            return
+
+        # Build normalized URL → PDF page-index map from bookmark_info
+        url_to_page = {}
+        for info in bookmark_info:
+            url = info.get('url', '')
+            if url:
+                url_to_page[self._normalize_url(url)] = info['start_page']
+
+        if not url_to_page:
+            print("📑 No URLs in bookmark_info — skipping link rewrite")
             return
 
         try:
             from PyPDF2 import PdfReader, PdfWriter
             from PyPDF2.generic import (
-                DictionaryObject, ArrayObject, NameObject,
-                NumberObject, FloatObject
+                DictionaryObject, ArrayObject, NameObject, FloatObject, NumberObject
             )
 
-            print("🔗 Adding internal navigation links...")
+            print(f"🔗 Rewriting in-text links as internal PDF navigation ({len(url_to_page)} target URLs)...")
 
             reader = PdfReader(pdf_path)
             writer = PdfWriter()
 
-            # Copy all pages
             for page in reader.pages:
                 writer.add_page(page)
 
-            # Manually copy bookmarks (clone_document_from_reader loses them)
+            # Copy bookmark outline
             if reader.outline:
                 for item in reader.outline:
                     if not isinstance(item, list):
-                        writer.add_outline_item(item.title, item.page)
+                        try:
+                            page_num = reader.get_page_number(item.page)
+                            writer.add_outline_item(item.title, page_num)
+                        except Exception:
+                            pass
 
-            # Get first page and its dimensions
-            first_page = writer.pages[0]
-            page_width = float(first_page.mediabox.width)
-            page_height = float(first_page.mediabox.height)
-
-            # Initialize annotations array if not present
-            if '/Annots' not in first_page:
-                first_page[NameObject('/Annots')] = ArrayObject()
-            annots = first_page['/Annots']
-
-            # Create link annotations for each linked article
-            links_added = 0
-            for i, info in enumerate(bookmark_info[1:], 1):  # Skip main article (index 0)
-                dest_page = info['start_page']
-                if dest_page >= len(writer.pages):
+            rewrites = 0
+            for page_idx, page in enumerate(writer.pages):
+                if '/Annots' not in page:
                     continue
+                for annot_ref in page['/Annots']:
+                    try:
+                        annot = annot_ref.get_object()
+                        if annot.get('/Subtype') != '/Link':
+                            continue
+                        action = annot.get('/A')
+                        if action is None:
+                            continue
+                        action = action.get_object()
+                        if action.get('/S') != '/URI':
+                            continue
+                        uri = str(action.get('/URI', ''))
+                        norm = self._normalize_url(uri)
+                        if norm not in url_to_page:
+                            continue
+                        target_idx = url_to_page[norm]
+                        if target_idx >= len(writer.pages):
+                            continue
+                        target_page = writer.pages[target_idx]
+                        target_height = float(target_page.mediabox.height)
+                        # Replace URI action with direct GoTo destination
+                        del annot[NameObject('/A')]
+                        annot[NameObject('/Dest')] = ArrayObject([
+                            target_page.indirect_reference,
+                            NameObject('/FitH'),
+                            FloatObject(target_height)
+                        ])
+                        rewrites += 1
+                    except Exception:
+                        continue
 
-                # Create link annotation
-                link_annot = DictionaryObject()
-                link_annot[NameObject('/Type')] = NameObject('/Annot')
-                link_annot[NameObject('/Subtype')] = NameObject('/Link')
+            with open(pdf_path, 'wb') as f:
+                writer.write(f)
 
-                # Link rectangle - position at bottom of first page as a "table of contents" area
-                # Each link is a horizontal bar
-                y_pos = 100 - (i * 20)  # Stack from bottom up
-                if y_pos < 20:
-                    y_pos = 20  # Minimum position
-
-                link_annot[NameObject('/Rect')] = ArrayObject([
-                    FloatObject(50),
-                    FloatObject(y_pos),
-                    FloatObject(page_width - 50),
-                    FloatObject(y_pos + 18)
-                ])
-
-                # Destination: go to the start page of this section
-                link_annot[NameObject('/Dest')] = ArrayObject([
-                    writer.pages[dest_page].indirect_reference,
-                    NameObject('/FitH'),
-                    FloatObject(page_height)
-                ])
-
-                # Border style (invisible border)
-                link_annot[NameObject('/Border')] = ArrayObject([
-                    NumberObject(0), NumberObject(0), NumberObject(0)
-                ])
-
-                # Highlight style when clicked
-                link_annot[NameObject('/H')] = NameObject('/I')  # Invert
-
-                # Add annotation directly to the page's annotations array
-                annots.append(link_annot)
-                links_added += 1
-
-            # Write the updated PDF back to the file
-            if links_added > 0:
-                with open(pdf_path, 'wb') as output_file:
-                    writer.write(output_file)
-                print(f"✅ Added {links_added} internal link annotations to PDF")
-
-            print(f"📑 Bookmarks provide navigation to {len(bookmark_info)} sections")
-            print("💡 Use PDF viewer's bookmark panel OR click links at bottom of first page")
+            print(f"✅ Rewrote {rewrites} in-text links as internal PDF navigation")
+            print(f"📑 {len(bookmark_info)} sections navigable via bookmark panel or in-text links")
 
         except Exception as e:
-            print(f"⚠️ Could not add link annotations: {e}")
+            print(f"⚠️ Could not rewrite link annotations: {e}")
             import traceback
             traceback.print_exc()
-            # Continue anyway - bookmarks still work
     
     def get_processing_summary(self):
         """Get a summary of link processing"""

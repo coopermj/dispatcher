@@ -73,19 +73,18 @@ class TrackingManager:
             if not data.get('success', False):
                 continue
 
-            # Check if the URL matches the read_online_url or is in the message_id
-            # Direct URL match
-            if stored_url and stored_url == url:
-                # Verify PDF still exists
-                pdf_path = data.get('pdf_path', '')
-                if pdf_path and os.path.exists(pdf_path):
-                    return True
+            url_matches = (stored_url and stored_url == url) or (message_id == url_hash)
+            if not url_matches:
+                continue
 
-            # Check by URL hash (website articles use this pattern)
-            if message_id == url_hash:
-                pdf_path = data.get('pdf_path', '')
-                if pdf_path and os.path.exists(pdf_path):
-                    return True
+            # If already uploaded to reMarkable, local PDF is irrelevant
+            if data.get('remarkable_uploaded'):
+                return True
+
+            # Not yet uploaded — only count it if the local PDF still exists
+            pdf_path = data.get('pdf_path', '')
+            if pdf_path and os.path.exists(pdf_path):
+                return True
 
         return False
 
@@ -104,14 +103,18 @@ class TrackingManager:
             if not data.get('success', False):
                 continue
 
-            # Check if PDF still exists
-            pdf_path = data.get('pdf_path', '')
-            if not pdf_path or not os.path.exists(pdf_path):
+            url = data.get('read_online_url', '')
+            if not url:
                 continue
 
-            # Add the read_online_url if present
-            url = data.get('read_online_url', '')
-            if url:
+            # If already uploaded to reMarkable, local PDF existence is irrelevant
+            if data.get('remarkable_uploaded'):
+                processed_urls.add(url)
+                continue
+
+            # Not yet uploaded — only count if the local PDF still exists
+            pdf_path = data.get('pdf_path', '')
+            if pdf_path and os.path.exists(pdf_path):
                 processed_urls.add(url)
 
         return processed_urls
@@ -124,14 +127,18 @@ class TrackingManager:
             if not data.get('success', False):
                 continue
 
-            # Check if PDF still exists
-            pdf_path = data.get('pdf_path', '')
-            if not pdf_path or not os.path.exists(pdf_path):
+            subject = data.get('subject', '')
+            if not subject:
                 continue
 
-            # Add the subject if present
-            subject = data.get('subject', '')
-            if subject:
+            # If already uploaded to reMarkable, local PDF existence is irrelevant
+            if data.get('remarkable_uploaded'):
+                processed_subjects.add(subject.lower().strip())
+                continue
+
+            # Not yet uploaded — only count if the local PDF still exists
+            pdf_path = data.get('pdf_path', '')
+            if pdf_path and os.path.exists(pdf_path):
                 processed_subjects.add(subject.lower().strip())
 
         return processed_subjects
@@ -152,16 +159,20 @@ class TrackingManager:
         if not processed_info.get('success', False):
             return False
 
-        # Verify the PDF still exists
+        # If already uploaded to reMarkable, local PDF existence is irrelevant
+        if processed_info.get('remarkable_uploaded'):
+            return True
+
+        # Not yet uploaded — verify the PDF still exists so it can be (re)uploaded
         pdf_path = processed_info.get('pdf_path', '')
         if pdf_path and os.path.exists(pdf_path):
             return True
-        else:
-            # PDF no longer exists, remove from tracking
-            print(f"🧹 Removing tracking for missing PDF: {pdf_path}")
-            del self.processed_emails[fingerprint]
-            self.save_tracking_data()
-            return False
+
+        # PDF is gone and was never uploaded — allow re-processing
+        print(f"🔄 PDF missing and not uploaded to reMarkable, will re-process: {pdf_path}")
+        del self.processed_emails[fingerprint]
+        self.save_tracking_data()
+        return False
 
     def mark_email_processed(self, email_data, pdf_path, remarkable_uploaded=False, success=True):
         """Mark an email as processed and store metadata (only if successful)"""
@@ -242,12 +253,13 @@ class TrackingManager:
             if not data.get('success', False):
                 print(f"🧹 Removing failed conversion: {data.get('subject', 'Unknown')[:50]}...")
                 should_remove = True
-            else:
-                # Remove if PDF no longer exists
+            elif not data.get('remarkable_uploaded'):
+                # Not yet uploaded — remove if PDF is missing (will be re-processed)
                 pdf_path = data.get('pdf_path', '')
                 if pdf_path and not os.path.exists(pdf_path):
-                    print(f"🧹 Removing missing PDF: {pdf_path}")
+                    print(f"🧹 Removing missing PDF (not uploaded): {pdf_path}")
                     should_remove = True
+            # If remarkable_uploaded=True, keep the entry regardless of local PDF
 
             if should_remove:
                 to_remove.append(fingerprint)

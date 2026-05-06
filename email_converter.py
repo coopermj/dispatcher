@@ -169,13 +169,16 @@ class DispatchPersistentConverter:
         return sorted_emails[:limit]
 
     def cleanup_tracking_data(self, output_dir):
-        """Remove tracking entries for PDFs that no longer exist"""
+        """Remove tracking entries for PDFs that no longer exist and were never uploaded"""
         cleaned_count = 0
         to_remove = []
 
         for fingerprint, data in self.processed_emails.items():
             # Never remove entries pruned from reMarkable — they block re-gathering
             if data.get('remarkable_expired'):
+                continue
+            # Keep entries that were uploaded — local PDF is no longer needed
+            if data.get('remarkable_uploaded'):
                 continue
             pdf_path = data.get('pdf_path', '')
             if pdf_path and not os.path.exists(pdf_path):
@@ -651,26 +654,39 @@ class DispatchPersistentConverter:
         try:
             print("🧹 Removing The Dispatch header and navigation elements...")
 
-            # Enhanced JavaScript to remove The Dispatch specific elements
             header_removal_script = """
             (() => {
-                // Remove by tag (header, nav, footer, aside)
-                ['header','nav','footer','aside'].forEach(tag => {
-                    document.querySelectorAll(tag).forEach(e => e.remove());
+                // Identify and protect main content first
+                const mainContent = document.querySelector('article, main, [role="main"], .post-content, .article-content, .entry-content');
+
+                // Remove by tag — skip if inside protected main content
+                ['header', 'nav', 'footer', 'aside'].forEach(tag => {
+                    document.querySelectorAll(tag).forEach(e => {
+                        if (mainContent && mainContent.contains(e)) return;
+                        e.remove();
+                    });
                 });
 
-                // Remove elements by class or id (but not 'fixed' or 'sticky')
+                // Remove UI chrome by keyword — but never anything inside main content.
+                // 'paywall' is intentionally omitted: article body lives in .paywalled-content
+                // even for subscribers, so matching it would delete the article.
                 const keywords = [
-                    'navbar','banner','paywall','comment','breadcrumb',
-                    'subscribe','sidebar','popup','ad','site-footer','site-info','z-scroll-to','primary-button',
-                    'newsletter-paywall','newsletters-tab','newsletters-shelf','accordion_newsletters'
+                    'navbar', 'banner', 'breadcrumb',
+                    'subscribe-modal', 'sidebar', 'popup', 'site-footer',
+                    'site-info', 'z-scroll-to', 'primary-button', 'sticky-header',
+                    'newsletters-tab', 'newsletters-shelf', 'accordion_newsletters'
                 ];
                 keywords.forEach(word => {
-                    document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => e.remove());
+                    document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => {
+                        if (mainContent && mainContent.contains(e)) return;
+                        if (e === mainContent) return;
+                        e.remove();
+                    });
                 });
 
-                // Remove overlays or popups by computed style (only if width/height covers most of viewport)
+                // Remove large fixed/sticky overlays (like paywall gates) outside main content
                 document.querySelectorAll('*').forEach(e => {
+                    if (mainContent && (mainContent.contains(e) || e.contains(mainContent))) return;
                     const s = window.getComputedStyle(e);
                     if ((s.position === 'fixed' || s.position === 'sticky') &&
                         e.offsetHeight > window.innerHeight * 0.5 &&
@@ -679,25 +695,46 @@ class DispatchPersistentConverter:
                     }
                 });
 
-                // Restore body/main/article margins if you want, but DO NOT remove <style> or <link>!
-                const main = document.querySelector('main, article, [role=main]');
-                if (main) {
-                    main.style.marginTop = '0px';
-                    main.style.paddingTop = '0px';
+                if (mainContent) {
+                    mainContent.style.marginTop = '0px';
+                    mainContent.style.paddingTop = '0px';
                 }
+
+                // Remove inline advertisement blocks injected into article body
+                document.querySelectorAll(
+                    '[class*="acf-block-inline-advertisement"], [class*="inline-advertisement"]'
+                ).forEach(e => e.remove());
+
+                // Remove "Presented by" / paid-ad sponsor banner images
+                document.querySelectorAll('figure.wp-block-image a[href*="utm_medium=paid"]').forEach(a => {
+                    const fig = a.closest('figure');
+                    if (fig) fig.remove();
+                });
+                document.querySelectorAll('figure.wp-block-image img').forEach(img => {
+                    const alt = (img.getAttribute('alt') || '').toLowerCase();
+                    if (alt.includes('presented by') || alt.includes('sponsored by') || alt.includes('message from')) {
+                        const fig = img.closest('figure');
+                        if (fig) fig.remove();
+                    }
+                });
+
+                // Cap full-viewport hero figures
+                document.querySelectorAll('figure').forEach(e => {
+                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                        e.style.height = '300px';
+                        e.style.maxHeight = '300px';
+                        if (e.parentElement) e.parentElement.style.minHeight = '450px';
+                    }
+                });
+
+                return mainContent ? 'Main content found' : 'No main content identified';
             })();
             """
 
-            # Execute the enhanced script
             result = await self.page.evaluate(header_removal_script)
+            print(f"🧹 Header cleanup: {result}")
 
-            # Wait for DOM changes and reflow
             await asyncio.sleep(2)
-
-            # Log the results
-            print(f"✅ Removed header/navigation elements")
-
-            # Scroll to top to ensure we start from the beginning
             await self.page.evaluate('window.scrollTo(0, 0);')
             await asyncio.sleep(1)
 
@@ -706,7 +743,6 @@ class DispatchPersistentConverter:
         except Exception as e:
             print(f"⚠️ Error removing header elements: {e}")
             print(f"🔧 Debug info: {traceback.format_exc()}")
-            # Continue anyway - this shouldn't stop PDF generation
             return True
 
     async def convert_url_to_pdf(self, url, output_filename):
@@ -739,6 +775,32 @@ class DispatchPersistentConverter:
 
             # Save HTML after header removal
             await self.save_html_snapshot("after_cleanup", url)
+
+            # Force lazy-loaded images to load before PDF generation
+            await self.page.evaluate("""
+                () => {
+                    document.querySelectorAll('img[loading="lazy"]').forEach(img => {
+                        img.loading = 'eager';
+                        if (img.dataset.src) img.src = img.dataset.src;
+                        if (img.dataset.srcset) img.srcset = img.dataset.srcset;
+                    });
+                    document.querySelectorAll('source[data-srcset]').forEach(s => {
+                        s.srcset = s.dataset.srcset;
+                    });
+                }
+            """)
+            await self.page.evaluate("""
+                async () => {
+                    window.scrollTo(0, document.body.scrollHeight);
+                    await new Promise(r => setTimeout(r, 500));
+                    window.scrollTo(0, 0);
+                    await new Promise(r => setTimeout(r, 200));
+                }
+            """)
+            try:
+                await self.page.wait_for_load_state('networkidle', timeout=8000)
+            except:
+                pass
 
             # Generate PDF
             print(f"📄 Generating PDF: {output_filename}")

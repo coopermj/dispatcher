@@ -513,6 +513,24 @@ class BrowserManager:
                     }
                 });
 
+                // Remove inline advertisement blocks injected into article body
+                document.querySelectorAll(
+                    '[class*="acf-block-inline-advertisement"], [class*="inline-advertisement"]'
+                ).forEach(e => e.remove());
+
+                // Remove "Presented by" / paid-ad sponsor banner images
+                document.querySelectorAll('figure.wp-block-image a[href*="utm_medium=paid"]').forEach(a => {
+                    const fig = a.closest('figure');
+                    if (fig) fig.remove();
+                });
+                document.querySelectorAll('figure.wp-block-image img').forEach(img => {
+                    const alt = (img.getAttribute('alt') || '').toLowerCase();
+                    if (alt.includes('presented by') || alt.includes('sponsored by') || alt.includes('message from')) {
+                        const fig = img.closest('figure');
+                        if (fig) fig.remove();
+                    }
+                });
+
                 return mainContent ? 'Main content found' : 'No main content identified';
             })();
             """
