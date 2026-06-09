@@ -108,3 +108,5 @@ tmp/
 # ReMarkable related (keep rmapi binary location private)
 rmapi
 rmapi.exe
+# Email pipeline tracking (contains email subjects/senders — keep private)
+dispatch_email_tracking.json

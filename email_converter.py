@@ -15,7 +15,6 @@ import asyncio
 import json
 import time
 import traceback
-import subprocess
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +29,9 @@ from googleapiclient.discovery import build
 # HTML parsing
 from bs4 import BeautifulSoup
 import html2text
+
+# ReMarkable integration (shared with modular pipeline)
+from modules.remarkable import ReMarkableManager
 
 
 class DispatchPersistentConverter:
@@ -48,6 +50,7 @@ class DispatchPersistentConverter:
         self.cookies_file = cookies_file
         self.tracking_file = tracking_file
         self.rmapi_path = os.path.expanduser(rmapi_path)
+        self.remarkable_manager = ReMarkableManager(self.rmapi_path)
         self.service = None
         self.creds = None
         self.user_info = None
@@ -193,81 +196,6 @@ class DispatchPersistentConverter:
             self.save_tracking_data()
 
         return cleaned_count
-
-    def check_rmapi_availability(self):
-        """Check if rmapi is available and accessible"""
-        try:
-            if not os.path.exists(self.rmapi_path):
-                print(f"❌ rmapi not found at: {self.rmapi_path}")
-                print(f"💡 Please ensure rmapi is installed and the path is correct")
-                return False
-
-            # Test rmapi with a simple command
-            result = subprocess.run([self.rmapi_path, 'ls'],
-                                    capture_output=True, text=True, timeout=30)
-
-            if result.returncode == 0:
-                print(f"✅ rmapi is available at: {self.rmapi_path}")
-                return True
-            else:
-                print(f"❌ rmapi test failed: {result.stderr}")
-                print(f"💡 Please ensure rmapi is properly configured and authenticated")
-                return False
-
-        except subprocess.TimeoutExpired:
-            print("❌ rmapi command timed out")
-            return False
-        except Exception as e:
-            print(f"❌ Error checking rmapi: {e}")
-            return False
-
-    def upload_to_remarkable(self, pdf_path, remarkable_folder="News"):
-        """Upload PDF to ReMarkable using rmapi"""
-        try:
-            pdf_path = Path(pdf_path)
-            if not pdf_path.exists():
-                print(f"❌ PDF file not found: {pdf_path}")
-                return False
-
-            print(f"📤 Uploading {pdf_path.name} to ReMarkable folder: {remarkable_folder}")
-
-            # First, ensure the News folder exists
-            print(f"📁 Checking/creating folder: {remarkable_folder}")
-            mkdir_result = subprocess.run([self.rmapi_path, 'mkdir', remarkable_folder],
-                                          capture_output=True, text=True, timeout=30)
-
-            # mkdir returns 0 if the folder was just created, non-zero if it already exists
-            if mkdir_result.returncode == 0:
-                # Newly created folder — wait for it to sync to the reMarkable cloud
-                # before attempting put, otherwise the upload will fail with "not found"
-                print(f"⏳ New folder created, waiting 10s for reMarkable cloud sync...")
-                time.sleep(10)
-            elif "already exists" not in (mkdir_result.stderr + mkdir_result.stdout).lower():
-                print(f"⚠️ mkdir result: {mkdir_result.stderr}")
-
-            # Upload the file to the News folder (retry up to 3 times for transient failures)
-            upload_cmd = [self.rmapi_path, 'put', str(pdf_path), remarkable_folder]
-            print(f"🔧 Running: {' '.join(upload_cmd)}")
-
-            for attempt in range(1, 4):
-                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0:
-                    print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{remarkable_folder}")
-                    return True
-                if attempt < 3:
-                    print(f"⚠️ Upload attempt {attempt} failed: {result.stderr.strip()} — retrying in 5s...")
-                    time.sleep(5)
-
-            print(f"❌ Upload failed after 3 attempts: {result.stderr}")
-            print(f"📤 stdout: {result.stdout}")
-            return False
-
-        except subprocess.TimeoutExpired:
-            print("❌ Upload command timed out")
-            return False
-        except Exception as e:
-            print(f"❌ Error uploading to ReMarkable: {e}")
-            return False
 
     def authenticate(self):
         """Authenticate with Google (for both Gmail and The Dispatch)"""
@@ -720,7 +648,7 @@ class DispatchPersistentConverter:
 
                 // Cap full-viewport hero figures
                 document.querySelectorAll('figure').forEach(e => {
-                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                    if (e.classList.contains('h-screen') || /\\bh-screen\\b/.test(e.getAttribute('class') || '')) {
                         e.style.height = '300px';
                         e.style.maxHeight = '300px';
                         if (e.parentElement) e.parentElement.style.minHeight = '450px';
@@ -872,7 +800,7 @@ class DispatchPersistentConverter:
 
         # Check rmapi availability if upload is requested
         if upload_to_remarkable:
-            if not self.check_rmapi_availability():
+            if not self.remarkable_manager.is_available():
                 print("⚠️ ReMarkable upload disabled due to rmapi issues")
                 upload_to_remarkable = False
 
@@ -957,7 +885,7 @@ class DispatchPersistentConverter:
                         # Upload to ReMarkable if enabled
                         remarkable_uploaded = False
                         if upload_to_remarkable:
-                            upload_success = self.upload_to_remarkable(filename, "News")
+                            upload_success = self.remarkable_manager.upload_pdf(filename, "News")
                             if upload_success:
                                 uploaded_count += 1
                                 remarkable_uploaded = True

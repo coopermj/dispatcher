@@ -154,7 +154,7 @@ class BrowserManager:
 
                 // Cap full-viewport hero figures so they don't consume the entire first PDF page.
                 document.querySelectorAll('figure').forEach(e => {
-                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                    if (e.classList.contains('h-screen') || /\\bh-screen\\b/.test(e.getAttribute('class') || '')) {
                         e.style.height = '300px';
                         e.style.maxHeight = '300px';
                         if (e.parentElement) {
@@ -504,7 +504,7 @@ class BrowserManager:
                 // title/byline overlay (which is a sibling of the figure, positioned relative
                 // to the parent) doesn't render above the top of the page.
                 document.querySelectorAll('figure').forEach(e => {
-                    if (e.classList.contains('h-screen') || /\bh-screen\b/.test(e.getAttribute('class') || '')) {
+                    if (e.classList.contains('h-screen') || /\\bh-screen\\b/.test(e.getAttribute('class') || '')) {
                         e.style.height = '300px';
                         e.style.maxHeight = '300px';
                         if (e.parentElement) {

@@ -157,12 +157,12 @@ RMAPI_TIMEOUT = get_int_env('RMAPI_TIMEOUT', 60)
 
 # The Dispatch website settings
 DISPATCH_BASE_URL = os.getenv('DISPATCH_BASE_URL', "https://thedispatch.com")
+# Only unambiguous sign-in prompts. 'subscribe' and 'get started' appear even
+# when logged in on The Dispatch, so including them would cause false "logged out"
+# detections (matching the logic already used in email_converter.py).
 LOGIN_INDICATORS = [
     'sign in',
-    'login',
     'log in',
-    'subscribe',
-    'get started'
 ]
 LOGGED_IN_INDICATORS = [
     'account',

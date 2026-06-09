@@ -142,14 +142,20 @@ class AuthManager:
             has_login_indicators = any(indicator in page_content.lower() for indicator in LOGIN_INDICATORS)
             has_logged_in_indicators = any(indicator in page_content.lower() for indicator in LOGGED_IN_INDICATORS)
 
-            # If we have logout/account indicators and no login prompts, we're likely logged in
-            if has_logged_in_indicators and not has_login_indicators:
+            # Account indicators win: if present, we're logged in. Only reject when there's
+            # an explicit sign-in prompt AND no account indicators at all. Anything else is
+            # ambiguous, so proceed with the saved cookies (mirrors email_converter.py).
+            if has_logged_in_indicators:
                 print("✅ Already authenticated with saved cookies!")
                 self.authenticated_with_dispatch = True
                 return True
-            else:
+            elif has_login_indicators and not has_logged_in_indicators:
                 print("❌ Not authenticated - need to log in")
                 return False
+            else:
+                print("✅ Authentication state ambiguous, proceeding with saved cookies")
+                self.authenticated_with_dispatch = True
+                return True
 
         except Exception as e:
             print(f"⚠️ Error testing authentication: {e}")
