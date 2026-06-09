@@ -15,16 +15,20 @@ from config.settings import TRACKING_FILE
 class TrackingManager:
     """Manages email processing tracking and duplicate detection"""
 
-    def __init__(self):
+    def __init__(self, tracking_file=None):
+        # Default to the shared website tracking file; the email pipeline passes
+        # its own path so the two pipelines keep separate tracking state.
+        self.tracking_file = tracking_file if tracking_file is not None else TRACKING_FILE
         self.processed_emails = {}
         self.load_tracking_data()
 
     def load_tracking_data(self):
         """Load previously processed email tracking data"""
         try:
-            if TRACKING_FILE.exists():
-                with open(TRACKING_FILE, 'r') as f:
+            if Path(self.tracking_file).exists():
+                with open(self.tracking_file, 'r') as f:
                     self.processed_emails = json.load(f)
+                self._backfill_success()
                 print(f"📊 Loaded tracking data: {len(self.processed_emails)} previously processed emails")
             else:
                 self.processed_emails = {}
@@ -33,10 +37,22 @@ class TrackingManager:
             print(f"⚠️ Error loading tracking data: {e}")
             self.processed_emails = {}
 
+    def _backfill_success(self):
+        """Backfill `success: True` for legacy entries missing the field.
+
+        Older email-pipeline entries were written without a `success` flag, which
+        is_email_processed() requires. Every persisted entry represents a completed
+        conversion, so a missing flag means success. Idempotent; only fills, never
+        overwrites an explicit value.
+        """
+        for entry in self.processed_emails.values():
+            if isinstance(entry, dict) and 'success' not in entry:
+                entry['success'] = True
+
     def save_tracking_data(self):
         """Save processed email tracking data"""
         try:
-            with open(TRACKING_FILE, 'w') as f:
+            with open(self.tracking_file, 'w') as f:
                 json.dump(self.processed_emails, f, indent=2)
             print(f"💾 Saved tracking data: {len(self.processed_emails)} processed emails")
         except Exception as e:

@@ -3,21 +3,84 @@
 ReMarkable integration using rmapi
 """
 
+import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 
 from config.settings import DEFAULT_RMAPI_PATH, REMARKABLE_FOLDER, RMAPI_TIMEOUT
 
+# Strip the generated filename prefix (dispatch_NNN_, dispatch_website_NNN_,
+# dispatch_email_NNN_) so a stored document name reduces to its article title.
+_FILENAME_PREFIX_RE = re.compile(r'^dispatch_(?:website_|email_)?\d+_', re.IGNORECASE)
+
+
+def _normalize_title(text):
+    """Lowercase and strip all non-alphanumerics (same scheme as prune_news.py)."""
+    return re.sub(r'[^a-z0-9]', '', (text or '').lower())
+
+
+def _normalize_document_name(name):
+    """Reduce a reMarkable document name to a normalized article title.
+
+    rmapi stores the uploaded filename (sans .pdf) as the visible name, so names
+    carry our dispatch_NNN_ prefix. Strip the extension and prefix, then normalize.
+    """
+    stem = Path(name).stem  # drop .pdf if present
+    stem = _FILENAME_PREFIX_RE.sub('', stem)
+    return _normalize_title(stem)
+
 
 class ReMarkableManager:
     """Manages ReMarkable device integration via rmapi"""
-    
+
     def __init__(self, rmapi_path=None):
         self.rmapi_path = os.path.expanduser(rmapi_path or DEFAULT_RMAPI_PATH)
         self.available = False
+        self._inventory = None  # set of normalized titles; None = not yet fetched
         self.check_availability()
+
+    def refresh_inventory(self, folder_name=None):
+        """Fetch the live document inventory for a folder, normalized for matching.
+
+        Fails open: on any error the inventory is an empty set so document_exists
+        never blocks an upload because the check itself broke.
+        """
+        folder_name = folder_name or REMARKABLE_FOLDER
+        self._inventory = set()
+        try:
+            result = subprocess.run(
+                [self.rmapi_path, '-json', 'ls', f'/{folder_name}'],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                print(f"⚠️ Could not list /{folder_name} for dedup: {result.stderr.strip()}")
+                return self._inventory
+
+            entries = json.loads(result.stdout)
+            for entry in entries:
+                if entry.get('type') == 'DocumentType':
+                    self._inventory.add(_normalize_document_name(entry.get('name', '')))
+            print(f"📋 reMarkable inventory: {len(self._inventory)} documents in /{folder_name}")
+        except Exception as e:
+            print(f"⚠️ Inventory fetch failed (proceeding without dedup): {e}")
+            self._inventory = set()
+        return self._inventory
+
+    def document_exists(self, title, folder_name=None):
+        """Return True if a document matching `title` is already on the device.
+
+        Matches on normalized title, ignoring the dispatch_NNN_ filename prefix and
+        the .pdf extension. Lazily fetches the inventory on first use (cached).
+        """
+        if self._inventory is None:
+            self.refresh_inventory(folder_name)
+        normalized = _normalize_title(title)
+        if not normalized:
+            return False
+        return normalized in self._inventory
     
     def check_availability(self):
         """Check if rmapi is available and accessible"""
