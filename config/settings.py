@@ -55,6 +55,7 @@ CREDENTIALS_FILE = Path(os.getenv('CREDENTIALS_FILE', 'credentials.json'))
 TOKEN_FILE = Path(os.getenv('TOKEN_FILE', 'token.pickle'))
 COOKIES_FILE = Path(os.getenv('COOKIES_FILE', 'dispatch_cookies.json'))
 TRACKING_FILE = Path(os.getenv('TRACKING_FILE', 'dispatch_tracking.json'))
+DISPATCH_EMAIL_TRACKING_FILE = Path(os.getenv('EMAIL_TRACKING_FILE', 'dispatch_email_tracking.json'))
 
 # Make paths absolute if they're relative
 if not CREDENTIALS_FILE.is_absolute():
@@ -65,6 +66,8 @@ if not COOKIES_FILE.is_absolute():
     COOKIES_FILE = BASE_DIR / COOKIES_FILE
 if not TRACKING_FILE.is_absolute():
     TRACKING_FILE = BASE_DIR / TRACKING_FILE
+if not DISPATCH_EMAIL_TRACKING_FILE.is_absolute():
+    DISPATCH_EMAIL_TRACKING_FILE = BASE_DIR / DISPATCH_EMAIL_TRACKING_FILE
 if not OUTPUT_DIR.is_absolute():
     OUTPUT_DIR = BASE_DIR / OUTPUT_DIR
 if not DEBUG_DIR.is_absolute():
@@ -83,7 +86,7 @@ PROCESSING_MODE = os.getenv('PROCESSING_MODE', 'website').lower()  # 'email' or 
 
 # Website scanning settings
 MAX_ARTICLES = get_int_env('MAX_ARTICLES', 10)
-ARTICLE_AGE_LIMIT_DAYS = get_int_env('ARTICLE_AGE_LIMIT_DAYS', 30)
+ARTICLE_AGE_LIMIT_DAYS = get_int_env('ARTICLE_AGE_LIMIT_DAYS', 7)
 WEBSITE_SECTIONS = [s.strip() for s in
                     os.getenv('WEBSITE_SECTIONS', 'newsletters,morning-dispatch,afternoon-dispatch').split(',')]
 SKIP_KEYWORDS = [k.strip().lower() for k in os.getenv('SKIP_KEYWORDS', 'podcast,video,live-stream').split(',')]
@@ -132,7 +135,7 @@ def load_skip_domains():
 SKIP_DOMAINS = load_skip_domains()
 
 # Email search settings
-GMAIL_SEARCH_QUERY = os.getenv('GMAIL_SEARCH_QUERY', 'from:@thedispatch.com')
+GMAIL_SEARCH_QUERY = os.getenv('GMAIL_SEARCH_QUERY', 'from:@thedispatch.com newer_than:7d')
 DEFAULT_MAX_EMAILS = get_int_env('MAX_EMAILS', 5)
 
 # Browser settings
