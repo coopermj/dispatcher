@@ -485,7 +485,8 @@ class DispatchConverter:
                 continue
             print(f"\n📤 Retrying upload: {entry.get('subject', '')[:60]}")
             retried += 1
-            if self.remarkable_manager.upload_pdf(pdf_path):
+            title = entry.get('subject', '') or pdf_path.stem
+            if self.remarkable_manager.upload_if_new(pdf_path, title):
                 self.tracking_manager.processed_emails[fingerprint]['remarkable_uploaded'] = True
                 succeeded += 1
         if retried:
@@ -511,7 +512,8 @@ class DispatchConverter:
                 print(f"\n📤 Retrying email upload: {entry.get('subject', '')[:60]}")
                 email_retried += 1
                 retried += 1
-                if self.remarkable_manager.upload_pdf(pdf_path):
+                title = entry.get('subject', '') or pdf_path.stem
+                if self.remarkable_manager.upload_if_new(pdf_path, title):
                     entry['remarkable_uploaded'] = True
                     succeeded += 1
 
