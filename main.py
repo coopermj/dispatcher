@@ -209,6 +209,11 @@ class DispatchConverter:
             print(f"\n🔄 Converting {len(content_list)} items to PDF...")
             print(f"⚡ Using parallel processing with up to {MAX_CONCURRENT_CONVERSIONS} concurrent conversions")
 
+            # Fetch the live reMarkable inventory once up front so per-item dedup checks
+            # hit the cache instead of racing to refresh it across concurrent conversions.
+            if upload_to_remarkable and self.remarkable_manager.is_available():
+                self.remarkable_manager.refresh_inventory()
+
             # Process items in parallel with concurrency limit
             await self.process_items_parallel(content_list)
             
@@ -357,7 +362,7 @@ class DispatchConverter:
             # Upload to ReMarkable if enabled
             remarkable_uploaded = False
             if self.stats['remarkable_enabled'] and self.remarkable_manager.is_available():
-                upload_success = self.remarkable_manager.upload_pdf(pdf_filename)
+                upload_success = self.remarkable_manager.upload_if_new(pdf_filename, content_data['subject'])
                 if upload_success:
                     self.stats['remarkable_uploads'] += 1
                     remarkable_uploaded = True

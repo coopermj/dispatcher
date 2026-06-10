@@ -184,6 +184,17 @@ class ReMarkableManager:
             print(f"❌ Error uploading to ReMarkable: {e}")
             return False
 
+    def upload_if_new(self, pdf_path, title, folder_name=None):
+        """Upload a PDF unless a matching document is already on the device.
+
+        Returns True if the document is on the device afterward (pre-existing or
+        newly uploaded), False if the upload was attempted and failed.
+        """
+        if self.document_exists(title, folder_name):
+            print(f"⏭️  Already on reMarkable, skipping upload: {title[:60]}")
+            return True
+        return self.upload_pdf(pdf_path, folder_name)
+
     def list_files(self, folder_name=None):
         """List files in a ReMarkable folder"""
         if not self.available:

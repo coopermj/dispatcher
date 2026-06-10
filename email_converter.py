@@ -1,835 +1,109 @@
 #!/usr/bin/env python3
 """
-The Dispatch Email to PDF Converter with Persistent Browser and ReMarkable Upload
-Enhanced with duplicate tracking to prevent reprocessing emails
-Keeps browser open throughout the entire conversion process
-Enhanced version that removes #app > header before PDF generation
-Now uploads PDFs to ReMarkable News folder using rmapi
+The Dispatch Email → PDF → reMarkable pipeline.
+
+Thin orchestrator over the shared modules/ components. It scans Gmail for The
+Dispatch newsletters (last 7 days, via GMAIL_SEARCH_QUERY), converts each
+"Read Online" page to a PDF, and uploads new ones to the reMarkable News folder.
+
+All heavy lifting is delegated to the shared modules so this pipeline and the
+website pipeline (main.py) stay in sync:
+  - Google OAuth + Dispatch login → modules.auth.AuthManager
+  - Gmail search / body / read-online URL → modules.email_handler.EmailHandler
+  - browser session, header removal, PDF conversion → modules.browser_manager.BrowserManager
+  - duplicate tracking → modules.tracking.TrackingManager
+  - reMarkable upload + live-inventory dedup → modules.remarkable.ReMarkableManager
 """
 
-import os
-import re
-import base64
-import pickle
 import asyncio
-import json
-import time
 import traceback
-import shutil
-from datetime import datetime
 from pathlib import Path
-import hashlib
 
-# Google API imports
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-
-# HTML parsing
-from bs4 import BeautifulSoup
-import html2text
-
-# ReMarkable integration (shared with modular pipeline)
-from modules.remarkable import ReMarkableManager
+from modules import (
+    AuthManager, EmailHandler, BrowserManager, TrackingManager, ReMarkableManager
+)
+from modules.utils import create_safe_pdf_filename
+from config.settings import (
+    DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE,
+    DEFAULT_FORCE_REPROCESS, DISPATCH_EMAIL_TRACKING_FILE, TRACKING_FILE,
+)
 
 
 class DispatchPersistentConverter:
-    def __init__(self, credentials_file='credentials.json', token_file='token.pickle',
-                 cookies_file='dispatch_cookies.json', rmapi_path='~/rmapi/rmapi',
-                 tracking_file='dispatch_email_tracking.json'):
-        # Expanded scopes for both Gmail and user info
-        self.SCOPES = [
-            'https://www.googleapis.com/auth/gmail.readonly',
-            'https://www.googleapis.com/auth/userinfo.email',
-            'https://www.googleapis.com/auth/userinfo.profile',
-            'openid'
-        ]
-        self.credentials_file = credentials_file
-        self.token_file = token_file
-        self.cookies_file = cookies_file
-        self.tracking_file = tracking_file
-        self.rmapi_path = os.path.expanduser(rmapi_path)
-        self.remarkable_manager = ReMarkableManager(self.rmapi_path)
-        self.service = None
-        self.creds = None
-        self.user_info = None
-        self.h2t = html2text.HTML2Text()
-        self.h2t.ignore_links = False
-        self.h2t.ignore_images = False
+    """Email pipeline orchestrator (Gmail → PDF → reMarkable)."""
 
-        # Browser session variables
-        self.browser = None
-        self.page = None
-        self.context = None
-        self.authenticated = False
+    def __init__(self, rmapi_path=None):
+        self.auth_manager = AuthManager()
+        self.email_handler = EmailHandler(self.auth_manager)
+        self.browser_manager = BrowserManager()
+        # Email pipeline keeps its own tracking file, separate from the website pipeline.
+        self.tracking_manager = TrackingManager(tracking_file=DISPATCH_EMAIL_TRACKING_FILE)
+        self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH)
 
-        # Tracking variables
-        self.processed_emails = {}
-        self.load_tracking_data()
-
-        # Cross-script dedup: URLs already processed by the web scanner
-        self.web_processed_urls = self._load_web_processed_urls()
-
-    def _load_web_processed_urls(self, web_tracking_file='dispatch_tracking.json'):
-        """Load URLs already processed by the web scanner to prevent cross-script duplicates"""
-        urls = set()
-        try:
-            if os.path.exists(web_tracking_file):
-                with open(web_tracking_file, 'r') as f:
-                    web_data = json.load(f)
-                for entry in web_data.values():
-                    url = entry.get('read_online_url', '')
-                    if url:
-                        urls.add(url)
-                print(f"🔗 Loaded {len(urls)} already-processed URLs from web scanner (cross-dedup)")
-        except Exception as e:
-            print(f"⚠️ Could not load web scanner tracking for cross-dedup: {e}")
-        return urls
+        # URLs already converted by the website pipeline — skip them here to avoid
+        # producing the same article twice across the two pipelines.
+        web_tracking = TrackingManager(tracking_file=TRACKING_FILE)
+        self.web_processed_urls = web_tracking.get_processed_urls()
+        if self.web_processed_urls:
+            print(f"🔗 Loaded {len(self.web_processed_urls)} URLs from web scanner (cross-dedup)")
 
     def is_url_already_processed_by_web(self, url):
-        """Return True if the web scanner already produced a PDF for this URL"""
+        """True if the website pipeline already produced a PDF for this URL."""
         return url in self.web_processed_urls
 
-    def load_tracking_data(self):
-        """Load previously processed email tracking data"""
-        try:
-            if os.path.exists(self.tracking_file):
-                with open(self.tracking_file, 'r') as f:
-                    self.processed_emails = json.load(f)
-                print(f"📊 Loaded tracking data: {len(self.processed_emails)} previously processed emails")
-            else:
-                self.processed_emails = {}
-                print("📊 No previous tracking data found - starting fresh")
-        except Exception as e:
-            print(f"⚠️ Error loading tracking data: {e}")
-            self.processed_emails = {}
-
-    def save_tracking_data(self):
-        """Save processed email tracking data"""
-        try:
-            with open(self.tracking_file, 'w') as f:
-                json.dump(self.processed_emails, f, indent=2)
-            print(f"💾 Saved tracking data: {len(self.processed_emails)} processed emails")
-        except Exception as e:
-            print(f"⚠️ Error saving tracking data: {e}")
-
-    def get_email_fingerprint(self, email_data):
-        """Create a unique fingerprint for an email based on multiple attributes"""
-        # Use multiple attributes to create a robust fingerprint
-        fingerprint_data = {
-            'subject': email_data.get('subject', ''),
-            'sender': email_data.get('sender', ''),
-            'date': email_data.get('date', ''),
-            'message_id': email_data.get('message_id', '')
-        }
-
-        # Create hash from the combined data
-        fingerprint_string = json.dumps(fingerprint_data, sort_keys=True)
-        return hashlib.md5(fingerprint_string.encode()).hexdigest()
-
-    def is_email_processed(self, email_data):
-        """Check if an email has been processed before"""
-        fingerprint = self.get_email_fingerprint(email_data)
-        if fingerprint not in self.processed_emails:
-            return False
-        # Permanently expired — never re-gather or re-send
-        if self.processed_emails[fingerprint].get('remarkable_expired'):
-            return True
-        return True
-
-    def mark_email_processed(self, email_data, pdf_path, remarkable_uploaded=False):
-        """Mark an email as processed and store metadata"""
-        fingerprint = self.get_email_fingerprint(email_data)
-
-        self.processed_emails[fingerprint] = {
-            'subject': email_data.get('subject', ''),
-            'sender': email_data.get('sender', ''),
-            'date': email_data.get('date', ''),
-            'message_id': email_data.get('message_id', ''),
-            'processed_date': datetime.now().isoformat(),
-            'pdf_path': pdf_path,
-            'remarkable_uploaded': remarkable_uploaded,
-            'fingerprint': fingerprint
-        }
-
-    def get_processed_count(self):
-        """Get count of previously processed emails"""
-        return len(self.processed_emails)
-
-    def list_processed_emails(self, limit=10):
-        """List recently processed emails"""
-        if not self.processed_emails:
-            return []
-
-        # Sort by processed_date (most recent first)
-        sorted_emails = sorted(
-            self.processed_emails.values(),
-            key=lambda x: x.get('processed_date', ''),
-            reverse=True
-        )
-
-        return sorted_emails[:limit]
-
-    def cleanup_tracking_data(self, output_dir):
-        """Remove tracking entries for PDFs that no longer exist and were never uploaded"""
-        cleaned_count = 0
-        to_remove = []
-
-        for fingerprint, data in self.processed_emails.items():
-            # Never remove entries pruned from reMarkable — they block re-gathering
-            if data.get('remarkable_expired'):
-                continue
-            # Keep entries that were uploaded — local PDF is no longer needed
-            if data.get('remarkable_uploaded'):
-                continue
-            pdf_path = data.get('pdf_path', '')
-            if pdf_path and not os.path.exists(pdf_path):
-                to_remove.append(fingerprint)
-                cleaned_count += 1
-
-        for fingerprint in to_remove:
-            del self.processed_emails[fingerprint]
-
-        if cleaned_count > 0:
-            print(f"🧹 Cleaned up {cleaned_count} entries for missing PDFs")
-            self.save_tracking_data()
-
-        return cleaned_count
-
-    def authenticate(self):
-        """Authenticate with Google (for both Gmail and The Dispatch)"""
-        print("🔐 Authenticating with Google...")
-        creds = None
-
-        if os.path.exists(self.token_file):
-            with open(self.token_file, 'rb') as token:
-                creds = pickle.load(token)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as e:
-                    print(f"🔧 Token refresh failed: {e}")
-                    creds = None
-
-            if not creds:
-                if not os.path.exists(self.credentials_file):
-                    print(f"❌ Please download Google OAuth credentials as '{self.credentials_file}'")
-                    return False
-
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, self.SCOPES)
-                creds = flow.run_local_server(port=8080)
-
-            with open(self.token_file, 'wb') as token:
-                pickle.dump(creds, token)
-
-        self.creds = creds
-        self.service = build('gmail', 'v1', credentials=creds)
-
-        # Get user info for The Dispatch login
-        try:
-            oauth_service = build('oauth2', 'v2', credentials=creds)
-            self.user_info = oauth_service.userinfo().get().execute()
-            print(f"✅ Authenticated as: {self.user_info.get('email')}")
-        except Exception as e:
-            print(f"⚠️ Could not get user info: {e}")
-            self.user_info = {'email': 'unknown@gmail.com'}
-
-        print("✅ Google authentication complete")
-        return True
-
-    def search_dispatch_emails(self, max_results=10):
-        """Search for emails from The Dispatch"""
-        try:
-            query = 'from:@thedispatch.com'
-            results = self.service.users().messages().list(
-                userId='me', q=query, maxResults=max_results
-            ).execute()
-
-            messages = results.get('messages', [])
-            print(f"📧 Found {len(messages)} emails from The Dispatch")
-            return messages
-
-        except Exception as e:
-            print(f"❌ Error searching emails: {e}")
-            return []
-
-    def get_message_content(self, message_id):
-        """Get full message content"""
-        try:
-            message = self.service.users().messages().get(
-                userId='me', id=message_id, format='full'
-            ).execute()
-            return message
-        except Exception as e:
-            print(f"❌ Error getting message {message_id}: {e}")
-            return None
-
-    def extract_body(self, payload):
-        """Extract email body from payload"""
-        body = ""
-
-        if 'parts' in payload:
-            for part in payload['parts']:
-                if part['mimeType'] == 'text/html':
-                    if 'data' in part['body']:
-                        data = part['body']['data']
-                        body = base64.urlsafe_b64decode(data).decode('utf-8')
-                        break
-                elif part['mimeType'] == 'multipart/alternative':
-                    body = self.extract_body(part)
-                    if body:
-                        break
-        elif payload['mimeType'] == 'text/html':
-            if 'data' in payload['body']:
-                data = payload['body']['data']
-                body = base64.urlsafe_b64decode(data).decode('utf-8')
-
-        return body
-
-    def extract_email_data(self, message):
-        """Extract structured data from email message"""
-        try:
-            headers = {h['name']: h['value'] for h in message['payload'].get('headers', [])}
-
-            subject = headers.get('Subject', 'No Subject')
-            sender = headers.get('From', 'Unknown Sender')
-            date = headers.get('Date', 'Unknown Date')
-
-            raw_body = self.extract_body(message['payload'])
-            is_html = bool(raw_body and ('<html' in raw_body.lower() or '<div' in raw_body.lower()))
-
-            if is_html:
-                text_body = self.h2t.handle(raw_body)
-            else:
-                text_body = raw_body
-
-            return {
-                'subject': subject,
-                'sender': sender,
-                'date': date,
-                'body': text_body,
-                'raw_body': raw_body,
-                'is_html': is_html,
-                'message_id': message['id']
-            }
-
-        except Exception as e:
-            print(f"❌ Error extracting email data: {e}")
-            return None
-
-    def extract_read_online_url(self, email_data):
-        """Extract 'Read Online' URL from email"""
-        if not email_data.get('raw_body'):
-            return None
-
-        try:
-            soup = BeautifulSoup(email_data['raw_body'], 'html.parser')
-
-            for link in soup.find_all('a', href=True):
-                link_text = link.get_text().strip().lower()
-                href = link['href']
-
-                if ('read online' in link_text or
-                        'view in browser' in link_text or
-                        'open in browser' in link_text):
-                    if 'thedispatch.com' in href:
-                        return href
-
-            return None
-        except Exception as e:
-            print(f"❌ Error extracting read online URL: {e}")
-            return None
-
-    async def save_cookies(self):
-        """Save browser cookies to file"""
-        try:
-            if not self.context:
-                print("⚠️ No browser context available for saving cookies")
-                return False
-
-            cookies = await self.context.cookies()
-
-            # Filter for The Dispatch cookies
-            dispatch_cookies = [
-                cookie for cookie in cookies
-                if 'thedispatch.com' in cookie.get('domain', '')
-            ]
-
-            if dispatch_cookies:
-                with open(self.cookies_file, 'w') as f:
-                    json.dump(dispatch_cookies, f, indent=2)
-                print(f"✅ Saved {len(dispatch_cookies)} cookies to {self.cookies_file}")
-                return True
-            else:
-                print("⚠️ No Dispatch cookies found to save")
-                return False
-
-        except Exception as e:
-            print(f"❌ Error saving cookies: {e}")
-            return False
-
-    async def load_cookies(self):
-        """Load browser cookies from file"""
-        try:
-            if not os.path.exists(self.cookies_file):
-                print(f"📝 No saved cookies found at {self.cookies_file}")
-                return False
-
-            if not self.context:
-                print("⚠️ No browser context available for loading cookies")
-                return False
-
-            with open(self.cookies_file, 'r') as f:
-                cookies = json.load(f)
-
-            if cookies:
-                await self.context.add_cookies(cookies)
-                print(f"✅ Loaded {len(cookies)} cookies from {self.cookies_file}")
-                return True
-            else:
-                print("⚠️ No cookies found in file")
-                return False
-
-        except Exception as e:
-            print(f"❌ Error loading cookies: {e}")
-            return False
-
-    async def test_authentication(self):
-        """Test if we're already authenticated by checking a protected page"""
-        try:
-            print("🔍 Testing existing authentication...")
-
-            # Try to access the homepage first and check for login indicators
-            await self.page.goto('https://thedispatch.com', timeout=30000)
-            await asyncio.sleep(3)
-
-            current_url = self.page.url
-            page_content = await self.page.content()
-
-            # Look for indicators that we're logged in
-            logged_in_indicators = [
-                'account',
-                'subscription',
-                'profile',
-                'logout',
-                'sign out',
-                'settings',
-                'subscriber',
-                'my account'
-            ]
-
-            # Look for login indicators (meaning we're NOT logged in).
-            # NOTE: 'subscribe' and 'get started' appear even when logged in on The Dispatch,
-            # so only use unambiguous indicators like an actual sign-in link/button.
-            login_indicators = [
-                'sign in',
-                'log in',
-            ]
-
-            has_login_indicators = any(indicator in page_content.lower() for indicator in login_indicators)
-            has_logged_in_indicators = any(indicator in page_content.lower() for indicator in logged_in_indicators)
-
-            # If we have account indicators, we're logged in. Only reject if we have explicit
-            # sign-in prompts AND no account indicators at all.
-            if has_logged_in_indicators:
-                print("✅ Already authenticated with saved cookies!")
-                self.authenticated = True
-                return True
-            elif has_login_indicators and not has_logged_in_indicators:
-                print("❌ Not authenticated - need to log in")
-                return False
-            else:
-                # Ambiguous — assume cookies are good enough to proceed
-                print("✅ Authentication state ambiguous, proceeding with saved cookies")
-                self.authenticated = True
-                return True
-
-        except Exception as e:
-            print(f"⚠️ Error testing authentication: {e}")
-            return False
-
-    async def save_html_snapshot(self, filename_suffix, url=""):
-        """Save current page HTML for debugging"""
-        try:
-            content = await self.page.content()
-
-            # Create debug directory if it doesn't exist
-            debug_dir = Path("debug_html")
-            debug_dir.mkdir(exist_ok=True)
-
-            # Create filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"debug_html/page_{timestamp}_{filename_suffix}.html"
-
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-            print(f"📄 HTML snapshot saved: {filename}")
-            if url:
-                print(f"🔗 URL: {url}")
-
-            return filename
-
-        except Exception as e:
-            print(f"⚠️ Error saving HTML snapshot: {e}")
-            return None
-
-    async def start_browser_session(self):
-        """Start persistent browser session"""
-        try:
-            from playwright.async_api import async_playwright
-
-            print("🌐 Starting persistent browser session...")
-            self.playwright = async_playwright()
-            self.p = await self.playwright.start()
-
-            self.browser = await self.p.chromium.launch(
-                headless=False,
-                args=['--no-first-run', '--no-default-browser-check']
-            )
-
-            self.context = await self.browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-            )
-
-            self.page = await self.context.new_page()
-            print("✅ Browser session started")
-            return True
-
-        except ImportError:
-            print("❌ Playwright not installed. Install with: pip install playwright && playwright install")
-            return False
-        except Exception as e:
-            print(f"❌ Error starting browser: {e}")
-            return False
-
-    async def authenticate_with_dispatch(self):
-        """Authenticate with The Dispatch using saved cookies or magic link"""
-        if self.authenticated:
-            return True
-
-        try:
-            print("🔐 Authenticating with The Dispatch...")
-
-            # First, try to load existing cookies
-            cookies_loaded = await self.load_cookies()
-
-            if cookies_loaded:
-                # Test if the loaded cookies work
-                if await self.test_authentication():
-                    return True
-                else:
-                    print("🔄 Saved cookies expired or invalid, need fresh authentication")
-
-            # If we get here, we need to authenticate manually
-            print("🔑 Manual authentication required")
-            print("=" * 50)
-            print("INSTRUCTIONS:")
-            print("1. A browser window is now open")
-            print("2. Navigate to The Dispatch and log in using your magic link")
-            print("3. Complete the authentication process")
-            print("4. Come back here and press ENTER when you're logged in")
-            print("5. Your session will be saved for future runs")
-            print("=" * 50)
-
-            # Open The Dispatch homepage
-            await self.page.goto('https://thedispatch.com', timeout=30000)
-            await asyncio.sleep(2)
-
-            # Wait for user to complete authentication
-            print("\n⏳ Waiting for you to complete login...")
-            try:
-                input("✋ Press ENTER after you've completed the login process: ")
-            except EOFError:
-                print("⚠️ Non-interactive mode: proceeding without manual login confirmation")
-                self.authenticated = True
-                return True
-
-            # Test authentication after manual login
-            if await self.test_authentication():
-                # Save cookies for future use
-                await self.save_cookies()
-                print("✅ Authentication successful and cookies saved!")
-                self.authenticated = True
-                return True
-            else:
-                print("❌ Authentication verification failed")
-                # Try to save cookies anyway in case our test was wrong
-                await self.save_cookies()
-                print("⚠️ Proceeding anyway - cookies saved for future attempts")
-                self.authenticated = True
-                return True
-
-        except (EOFError, Exception) as e:
-            print(f"❌ Authentication error: {e}")
-            if isinstance(e, EOFError):
-                print("⚠️ Non-interactive mode: skipping manual login")
-            else:
-                print("🔧 Please complete authentication manually if needed")
-                try:
-                    input("Press ENTER after you've logged in: ")
-                except EOFError:
-                    print("⚠️ Non-interactive mode: proceeding anyway")
-            self.authenticated = True
-            return True
-
-    async def remove_header_elements(self):
-        """Remove header elements and navigation/accessibility elements specifically for The Dispatch"""
-        try:
-            print("🧹 Removing The Dispatch header and navigation elements...")
-
-            header_removal_script = """
-            (() => {
-                // Identify and protect main content first
-                const mainContent = document.querySelector('article, main, [role="main"], .post-content, .article-content, .entry-content');
-
-                // Remove by tag — skip if inside protected main content
-                ['header', 'nav', 'footer', 'aside'].forEach(tag => {
-                    document.querySelectorAll(tag).forEach(e => {
-                        if (mainContent && mainContent.contains(e)) return;
-                        e.remove();
-                    });
-                });
-
-                // Remove UI chrome by keyword — but never anything inside main content.
-                // 'paywall' is intentionally omitted: article body lives in .paywalled-content
-                // even for subscribers, so matching it would delete the article.
-                const keywords = [
-                    'navbar', 'banner', 'breadcrumb',
-                    'subscribe-modal', 'sidebar', 'popup', 'site-footer',
-                    'site-info', 'z-scroll-to', 'primary-button', 'sticky-header',
-                    'newsletters-tab', 'newsletters-shelf', 'accordion_newsletters'
-                ];
-                keywords.forEach(word => {
-                    document.querySelectorAll(`[class*="${word}"], [id*="${word}"]`).forEach(e => {
-                        if (mainContent && mainContent.contains(e)) return;
-                        if (e === mainContent) return;
-                        e.remove();
-                    });
-                });
-
-                // Remove large fixed/sticky overlays (like paywall gates) outside main content
-                document.querySelectorAll('*').forEach(e => {
-                    if (mainContent && (mainContent.contains(e) || e.contains(mainContent))) return;
-                    const s = window.getComputedStyle(e);
-                    if ((s.position === 'fixed' || s.position === 'sticky') &&
-                        e.offsetHeight > window.innerHeight * 0.5 &&
-                        e.offsetWidth > window.innerWidth * 0.5) {
-                        e.remove();
-                    }
-                });
-
-                if (mainContent) {
-                    mainContent.style.marginTop = '0px';
-                    mainContent.style.paddingTop = '0px';
-                }
-
-                // Remove inline advertisement blocks injected into article body
-                document.querySelectorAll(
-                    '[class*="acf-block-inline-advertisement"], [class*="inline-advertisement"]'
-                ).forEach(e => e.remove());
-
-                // Remove "Presented by" / paid-ad sponsor banner images
-                document.querySelectorAll('figure.wp-block-image a[href*="utm_medium=paid"]').forEach(a => {
-                    const fig = a.closest('figure');
-                    if (fig) fig.remove();
-                });
-                document.querySelectorAll('figure.wp-block-image img').forEach(img => {
-                    const alt = (img.getAttribute('alt') || '').toLowerCase();
-                    if (alt.includes('presented by') || alt.includes('sponsored by') || alt.includes('message from')) {
-                        const fig = img.closest('figure');
-                        if (fig) fig.remove();
-                    }
-                });
-
-                // Cap full-viewport hero figures
-                document.querySelectorAll('figure').forEach(e => {
-                    if (e.classList.contains('h-screen') || /\\bh-screen\\b/.test(e.getAttribute('class') || '')) {
-                        e.style.height = '300px';
-                        e.style.maxHeight = '300px';
-                        if (e.parentElement) e.parentElement.style.minHeight = '450px';
-                    }
-                });
-
-                return mainContent ? 'Main content found' : 'No main content identified';
-            })();
-            """
-
-            result = await self.page.evaluate(header_removal_script)
-            print(f"🧹 Header cleanup: {result}")
-
-            await asyncio.sleep(2)
-            await self.page.evaluate('window.scrollTo(0, 0);')
-            await asyncio.sleep(1)
-
-            return True
-
-        except Exception as e:
-            print(f"⚠️ Error removing header elements: {e}")
-            print(f"🔧 Debug info: {traceback.format_exc()}")
-            return True
-
-    async def convert_url_to_pdf(self, url, output_filename):
-        """Convert URL to PDF using persistent session with header removal"""
-        try:
-            print(f"🔗 Navigating to: {url}")
-
-            # Navigate to the newsletter URL
-            await self.page.goto(url, timeout=30000)
-            await asyncio.sleep(3)
-
-            # Check page content
-            title = await self.page.title()
-            print(f"📄 Page title: {title}")
-
-            # Wait for content to load
-            try:
-                await self.page.wait_for_selector('article, .article, .post, .content, main', timeout=10000)
-                print("✅ Content loaded")
-            except:
-                print("⚠️ Standard content selectors not found, but continuing...")
-
-            await asyncio.sleep(2)
-
-            # Save HTML before any modifications
-            await self.save_html_snapshot("before_cleanup", url)
-
-            # Remove header elements before PDF generation
-            await self.remove_header_elements()
-
-            # Save HTML after header removal
-            await self.save_html_snapshot("after_cleanup", url)
-
-            # Force lazy-loaded images to load before PDF generation
-            await self.page.evaluate("""
-                () => {
-                    document.querySelectorAll('img[loading="lazy"]').forEach(img => {
-                        img.loading = 'eager';
-                        if (img.dataset.src) img.src = img.dataset.src;
-                        if (img.dataset.srcset) img.srcset = img.dataset.srcset;
-                    });
-                    document.querySelectorAll('source[data-srcset]').forEach(s => {
-                        s.srcset = s.dataset.srcset;
-                    });
-                }
-            """)
-            await self.page.evaluate("""
-                async () => {
-                    window.scrollTo(0, document.body.scrollHeight);
-                    await new Promise(r => setTimeout(r, 500));
-                    window.scrollTo(0, 0);
-                    await new Promise(r => setTimeout(r, 200));
-                }
-            """)
-            try:
-                await self.page.wait_for_load_state('networkidle', timeout=8000)
-            except:
-                pass
-
-            # Generate PDF
-            print(f"📄 Generating PDF: {output_filename}")
-            await self.page.pdf(
-                path=output_filename,
-                format='A4',
-                margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
-                print_background=True,
-                prefer_css_page_size=False
-            )
-
-            # Verify PDF was created
-            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 5000:
-                print(f"✅ PDF created successfully: {output_filename}")
-                return True
-            else:
-                print("❌ PDF creation failed or file too small")
-                return False
-
-        except Exception as e:
-            print(f"❌ Error converting URL: {e}")
-            return False
-
-    async def close_browser_session(self):
-        """Close the browser session"""
-        try:
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'p'):
-                await self.p.stop()
-            print("🔒 Browser session closed")
-        except Exception as e:
-            print(f"⚠️ Error closing browser: {e}")
-
-    def sanitize_filename(self, filename):
-        """Create safe filename"""
-        filename = re.sub(r'[^\w\s-]', '', filename)
-        filename = re.sub(r'[-\s]+', '-', filename)
-        return filename[:100]
-
-    def print_tracking_summary(self):
-        """Print a summary of tracking status"""
-        print("\n📊 TRACKING SUMMARY")
-        print("=" * 50)
-        total_processed = self.get_processed_count()
-        print(f"📝 Total emails processed: {total_processed}")
-
-        if total_processed > 0:
-            print("\n📋 Recently processed emails:")
-            recent = self.list_processed_emails(5)
-            for i, email in enumerate(recent, 1):
-                print(f"  {i}. {email.get('subject', 'No Subject')[:50]}...")
-                print(f"     📅 {email.get('processed_date', 'Unknown date')}")
-                print(f"     📤 ReMarkable: {'✅' if email.get('remarkable_uploaded') else '❌'}")
-        print("=" * 50)
-
-    async def process_emails(self, output_dir='dispatch_persistent_pdfs', max_emails=5,
-                             upload_to_remarkable=True, force_reprocess=False):
-        """Main processing function with persistent browser and ReMarkable upload"""
-        print("🚀 Starting Dispatch Email Converter with Persistent Browser & ReMarkable Upload")
-        print("📊 Enhanced with duplicate tracking and prevention")
+    async def process_emails(self, output_dir='dispatch_persistent_pdfs', max_emails=None,
+                             upload_to_remarkable=None, force_reprocess=None):
+        """Scan Gmail, convert newsletters to PDF, and upload new ones to reMarkable."""
+        max_emails = max_emails if max_emails is not None else DEFAULT_MAX_EMAILS
+        upload_to_remarkable = (upload_to_remarkable if upload_to_remarkable is not None
+                                else DEFAULT_UPLOAD_TO_REMARKABLE)
+        force_reprocess = force_reprocess if force_reprocess is not None else DEFAULT_FORCE_REPROCESS
+
+        print("🚀 Starting Dispatch Email Converter (Gmail → PDF → reMarkable)")
         print("=" * 70)
 
-        # Show tracking summary
-        self.print_tracking_summary()
+        self.tracking_manager.print_tracking_summary()
+        self.tracking_manager.cleanup_tracking_data()
 
-        # Clean up tracking data (remove entries for missing PDFs)
-        self.cleanup_tracking_data(output_dir)
-
-        # Check rmapi availability if upload is requested
-        if upload_to_remarkable:
-            if not self.remarkable_manager.is_available():
-                print("⚠️ ReMarkable upload disabled due to rmapi issues")
-                upload_to_remarkable = False
+        if upload_to_remarkable and not self.remarkable_manager.is_available():
+            print("⚠️ ReMarkable upload disabled due to rmapi issues")
+            upload_to_remarkable = False
 
         try:
-            # Step 1: Authenticate with Google
-            if not self.authenticate():
+            # Step 1: Google auth (Gmail + user info for The Dispatch)
+            if not self.auth_manager.authenticate_google():
+                print("❌ Google authentication failed")
                 return
 
-            # Step 2: Start browser session
-            if not await self.start_browser_session():
+            # Step 2: Browser session
+            if not await self.browser_manager.start_browser_session():
+                print("❌ Browser session failed to start")
                 return
 
-            # Step 3: Authenticate with The Dispatch (one time)
-            if not await self.authenticate_with_dispatch():
-                await self.close_browser_session()
+            page = self.browser_manager.get_page()
+            context = self.browser_manager.get_context()
+
+            # Step 3: The Dispatch login (cookies or manual)
+            if not await self.auth_manager.authenticate_with_dispatch(page, context):
+                print("❌ The Dispatch authentication failed")
+                await self.browser_manager.close_browser_session()
                 return
 
-            # Step 4: Create output directory (resolve to absolute so stored paths are portable)
+            # Step 4: Output directory (absolute, so tracking paths are portable)
             output_path = Path(output_dir).resolve()
             output_path.mkdir(exist_ok=True)
 
-            # Step 5: Get email list
-            messages = self.search_dispatch_emails(max_emails)
+            # Step 5: Pre-fetch the reMarkable inventory once for upload dedup
+            if upload_to_remarkable:
+                self.remarkable_manager.refresh_inventory()
+
+            # Step 6: Get the recent email list (GMAIL_SEARCH_QUERY scopes to last 7 days)
+            messages = self.email_handler.search_dispatch_emails(max_emails)
             if not messages:
                 print("❌ No emails found")
-                await self.close_browser_session()
+                await self.browser_manager.close_browser_session()
                 return
 
-            # Step 6: Process each email (browser stays open)
             success_count = 0
             uploaded_count = 0
             skipped_count = 0
@@ -837,108 +111,93 @@ class DispatchPersistentConverter:
             for i, message in enumerate(messages, 1):
                 print(f"\n📄 Processing email {i}/{len(messages)}...")
 
-                # Get email content
-                email_msg = self.get_message_content(message['id'])
+                email_msg = self.email_handler.get_message_content(message['id'])
                 if not email_msg:
                     continue
 
-                # Extract email data
-                email_data = self.extract_email_data(email_msg)
+                email_data = self.email_handler.extract_email_data(email_msg)
                 if not email_data:
                     continue
 
                 print(f"📧 Subject: {email_data['subject']}")
 
-                # Check if already processed (unless force reprocess is enabled)
-                if not force_reprocess and self.is_email_processed(email_data):
-                    fingerprint = self.get_email_fingerprint(email_data)
-                    processed_data = self.processed_emails[fingerprint]
-                    print(f"⏭️  SKIPPED - Already processed on {processed_data.get('processed_date', 'unknown date')}")
-                    print(f"📁 Existing PDF: {processed_data.get('pdf_path', 'unknown path')}")
-                    print(
-                        f"📤 ReMarkable: {'✅ Uploaded' if processed_data.get('remarkable_uploaded') else '❌ Not uploaded'}")
+                # Skip already-processed emails (unless forcing)
+                if not force_reprocess and self.tracking_manager.is_email_processed(email_data):
+                    info = self.tracking_manager.get_processed_info(email_data) or {}
+                    print(f"⏭️  SKIPPED - already processed on {info.get('processed_date', 'unknown date')}")
                     skipped_count += 1
                     continue
 
-                # Create filename (absolute path so tracking entries are portable)
-                safe_subject = self.sanitize_filename(email_data['subject'])
-                filename = str(output_path / f"dispatch_{i:03d}_{safe_subject}.pdf")
-
-                # Get Read Online URL
-                read_online_url = self.extract_read_online_url(email_data)
-
-                if read_online_url:
-                    print(f"🔗 Found Read Online URL: {read_online_url}")
-
-                    # Cross-script dedup: skip if web scanner already processed this URL
-                    if not force_reprocess and self.is_url_already_processed_by_web(read_online_url):
-                        print(f"⏭️  SKIPPED - URL already processed by web scanner (cross-dedup)")
-                        skipped_count += 1
-                        continue
-
-                    success = await self.convert_url_to_pdf(read_online_url, filename)
-
-                    if success:
-                        success_count += 1
-                        print(f"✅ Successfully converted: {filename}")
-
-                        # Upload to ReMarkable if enabled
-                        remarkable_uploaded = False
-                        if upload_to_remarkable:
-                            upload_success = self.remarkable_manager.upload_pdf(filename, "News")
-                            if upload_success:
-                                uploaded_count += 1
-                                remarkable_uploaded = True
-                            else:
-                                print(f"⚠️ Failed to upload {filename} to ReMarkable")
-
-                        # Mark as processed in tracking
-                        self.mark_email_processed(email_data, filename, remarkable_uploaded)
-                        self.save_tracking_data()
-                        print(f"💾 Email marked as processed in tracking")
-
-                    else:
-                        print(f"❌ Failed to convert")
-                else:
+                read_online_url = self.email_handler.extract_read_online_url(email_data)
+                email_data['read_online_url'] = read_online_url
+                if not read_online_url:
                     print("❌ No Read Online URL found, skipping...")
+                    continue
 
-                # Small delay between conversions
+                print(f"🔗 Found Read Online URL: {read_online_url}")
+
+                # Cross-pipeline dedup: skip if the website pipeline already did this URL
+                if not force_reprocess and self.is_url_already_processed_by_web(read_online_url):
+                    print("⏭️  SKIPPED - URL already processed by web scanner (cross-dedup)")
+                    skipped_count += 1
+                    continue
+
+                filename = str(create_safe_pdf_filename(
+                    email_data['subject'], index=i, output_dir=output_path, prefix='dispatch'
+                ))
+
+                # Convert using the shared, image-safe conversion path
+                success = await self.browser_manager.convert_url_to_pdf_with_page(
+                    read_online_url, filename, page
+                )
+                if not success:
+                    print("❌ Failed to convert")
+                    continue
+
+                success_count += 1
+                print(f"✅ Successfully converted: {filename}")
+
+                # Upload through the dedup gate (skips if already on the device)
+                remarkable_uploaded = False
+                if upload_to_remarkable:
+                    if self.remarkable_manager.upload_if_new(filename, email_data['subject']):
+                        uploaded_count += 1
+                        remarkable_uploaded = True
+                    else:
+                        print(f"⚠️ Failed to upload {filename} to ReMarkable")
+
+                if self.tracking_manager.mark_email_processed(
+                    email_data, filename, remarkable_uploaded, success=True
+                ):
+                    self.tracking_manager.save_tracking_data()
+
                 await asyncio.sleep(1)
 
-            print(f"\n🎉 Email conversion complete!")
+            print("\n🎉 Email conversion complete!")
             print(f"✅ Successfully converted: {success_count}/{len(messages)} emails")
             print(f"⏭️  Skipped (already processed): {skipped_count}/{len(messages)} emails")
             print(f"📁 Check the '{output_dir}' directory for PDFs")
-
             if upload_to_remarkable:
-                print(f"📤 Successfully uploaded to ReMarkable: {uploaded_count}/{success_count} PDFs")
-                if uploaded_count > 0:
-                    print(f"📱 Check your ReMarkable's 'News' folder for the uploaded files")
+                print(f"📤 Uploaded to ReMarkable: {uploaded_count}/{success_count} PDFs")
 
-            # Final tracking summary
-            self.print_tracking_summary()
+            self.tracking_manager.print_tracking_summary()
 
         finally:
-            # Always close browser session
-            await self.close_browser_session()
+            await self.browser_manager.close_browser_session()
 
 
 async def run_email_converter():
-    """Entry point for calling from main.py or other external callers"""
-    from config.settings import DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE, DEFAULT_FORCE_REPROCESS
-    converter = DispatchPersistentConverter(
-        rmapi_path=DEFAULT_RMAPI_PATH
-    )
+    """Entry point for calling from main.py or other external callers."""
+    converter = DispatchPersistentConverter(rmapi_path=DEFAULT_RMAPI_PATH)
     await converter.process_emails(
         output_dir='dispatch_persistent_pdfs',
         max_emails=DEFAULT_MAX_EMAILS,
         upload_to_remarkable=DEFAULT_UPLOAD_TO_REMARKABLE,
-        force_reprocess=DEFAULT_FORCE_REPROCESS
+        force_reprocess=DEFAULT_FORCE_REPROCESS,
     )
 
 
 async def main():
-    """Main function"""
     try:
         await run_email_converter()
     except Exception as e:
@@ -948,9 +207,7 @@ async def main():
 
 if __name__ == "__main__":
     print("🚀 THE DISPATCH EMAIL CONVERTER + REMARKABLE UPLOAD")
-    print("📊 Enhanced with duplicate tracking and prevention")
     print("=" * 65)
-
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
