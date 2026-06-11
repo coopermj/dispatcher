@@ -29,6 +29,19 @@ from config.settings import (
     DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES, FOLLOW_ARTICLE_LINKS,
     MAX_CONCURRENT_CONVERSIONS
 )
+from email_converter import run_email_converter
+
+
+async def _run_email_pipeline():
+    """Run the Gmail → PDF → reMarkable pipeline, logging failures without aborting."""
+    print("\n" + "=" * 65)
+    print("📧 Starting email converter...")
+    print("=" * 65)
+    try:
+        await run_email_converter()
+    except Exception as e:
+        print(f"⚠️ Email converter failed: {e}")
+        print(f"🔧 DEBUG: {traceback.format_exc()}")
 
 
 class DispatchConverter:
@@ -560,24 +573,23 @@ async def main():
                 converter.print_final_summary()
             finally:
                 await converter.cleanup()
+            # Preserve prior behavior: the email converter still runs after a --url job.
+            if not args.skip_email:
+                await _run_email_pipeline()
         # Normal mode: scan and process (email or website based on PROCESSING_MODE in .env)
         else:
+            # Run the EMAIL pipeline FIRST. It renders newsletters cleanly from the
+            # "Read Online" URL, so its PDF lands on the device before the website
+            # pipeline's heavier render of the same article — which the inventory
+            # dedup then skips. If the email pipeline fails, the website pipeline
+            # still runs below as a fallback.
+            if not args.skip_email:
+                await _run_email_pipeline()
+
             await converter.process_content(
                 force_reprocess=False,
                 upload_to_remarkable=True
             )
-
-        # Run email converter unless explicitly skipped
-        if not args.skip_email:
-            print("\n" + "=" * 65)
-            print("📧 Starting email converter...")
-            print("=" * 65)
-            try:
-                from email_converter import run_email_converter
-                await run_email_converter()
-            except Exception as e:
-                print(f"⚠️ Email converter failed (website processing already complete): {e}")
-                print(f"🔧 DEBUG: {traceback.format_exc()}")
 
     except KeyboardInterrupt:
         print("\n👋 Process interrupted by user")

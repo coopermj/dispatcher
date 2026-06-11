@@ -1,7 +1,38 @@
 """Unit tests for DispatchConverter logic in main.py"""
+import sys
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
+
+
+async def test_normal_mode_runs_email_before_website(monkeypatch):
+    """In normal (scan) mode the email pipeline runs BEFORE the website pipeline,
+    so its clean newsletter renders land on the device first and win the dedup."""
+    import main
+
+    calls = []
+
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            pass
+        def print_startup_banner(self):
+            pass
+        def retry_failed_uploads(self):
+            calls.append('retry')
+        async def process_content(self, *a, **k):
+            calls.append('website')
+            return True
+
+    async def fake_email():
+        calls.append('email')
+
+    monkeypatch.setattr(main, 'DispatchConverter', FakeConverter)
+    monkeypatch.setattr(main, 'run_email_converter', fake_email)
+    monkeypatch.setattr(sys, 'argv', ['main.py'])
+
+    await main.main()
+
+    assert calls == ['email', 'website']
 
 
 # ---------------------------------------------------------------------------
