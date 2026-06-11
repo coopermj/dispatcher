@@ -28,6 +28,18 @@ class LinkProcessor:
         self._active_page = None  # Dedicated page for current processing
         self._owns_page = False   # Whether we created the page and should close it
 
+    @staticmethod
+    def _temp_dir_for(output_filename):
+        """Temp dir for one conversion's intermediate PDFs.
+
+        Keyed on the (unique) output filename so concurrent conversions each get
+        their own directory. Previously every conversion shared
+        debug_html/temp_pdfs/ with fixed names like page_1_main.pdf, so parallel
+        runs clobbered each other's main-article PDF and the merged output ended
+        up containing a different article's content.
+        """
+        return Path(DEBUG_DIR) / "temp_pdfs" / Path(output_filename).stem
+
     async def process_article_with_links(self, article_url, output_filename, page=None):
         """Process an article and all its linked pages into a single clean PDF (no headers)"""
         if not FOLLOW_ARTICLE_LINKS:
@@ -80,9 +92,11 @@ class LinkProcessor:
             soup = BeautifulSoup(content, 'html.parser')
             links = self.extract_links(soup, article_url)
 
-            # Set up temp directory for PDFs
-            temp_dir = Path(DEBUG_DIR) / "temp_pdfs"
-            temp_dir.mkdir(exist_ok=True)
+            # Set up a per-conversion temp directory for intermediate PDFs. Unique
+            # per output filename so concurrent conversions can't clobber each
+            # other's pages (the cause of cross-article content bleed).
+            temp_dir = self._temp_dir_for(output_filename)
+            temp_dir.mkdir(parents=True, exist_ok=True)
             pdf_pages = []
 
             # *** CRITICAL FIX: Generate main article PDF FIRST, while still on the page ***
@@ -234,12 +248,17 @@ class LinkProcessor:
                 print(f"❌ No PDFs were created successfully")
                 success = False
 
-            # Cleanup temp files
+            # Cleanup temp files and this conversion's temp subdirectory
             for pdf_file in pdf_pages:
                 try:
                     Path(pdf_file).unlink(missing_ok=True)
                 except:
                     pass
+            try:
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
             if success:
                 print(f"✅ Generated multi-page PDF with {len(pdf_pages)} pages")
@@ -788,12 +807,13 @@ class LinkProcessor:
         try:
             print(f"📄 Generating multi-page PDF with {len(linked_pages) + 1} pages (no headers)...")
             
-            # Create temporary PDF files for each page
-            temp_dir = Path(DEBUG_DIR) / "temp_pdfs"
-            temp_dir.mkdir(exist_ok=True)
-            
+            # Create a per-conversion temp directory (unique per output filename)
+            # so concurrent conversions don't clobber each other's pages.
+            temp_dir = self._temp_dir_for(output_filename)
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
             pdf_pages = []
-            
+
             # Generate PDF for main page (no header)
             main_pdf = temp_dir / f"page_1_main.pdf"
             await self.generate_single_page_pdf(main_url, str(main_pdf), is_main=True)
