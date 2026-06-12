@@ -518,6 +518,11 @@ class BrowserManager:
                     '[class*="acf-block-inline-advertisement"], [class*="inline-advertisement"]'
                 ).forEach(e => e.remove());
 
+                // Remove the comments widget (Disqus) — clutter in a reading PDF.
+                document.querySelectorAll(
+                    '#comments, #comments-content, [class*="comments-container"], [class*="disqus"]'
+                ).forEach(e => e.remove());
+
                 // Remove "Presented by" / paid-ad sponsor banner images
                 document.querySelectorAll('figure.wp-block-image a[href*="utm_medium=paid"]').forEach(a => {
                     const fig = a.closest('figure');
