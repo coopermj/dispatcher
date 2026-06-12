@@ -35,6 +35,33 @@ async def test_normal_mode_runs_email_before_website(monkeypatch):
     assert calls == ['email', 'website']
 
 
+async def test_normal_mode_defers_upload_and_force_to_config(monkeypatch):
+    """main() must not hardcode upload/force_reprocess — it should defer to config
+    (.env) so UPLOAD_TO_REMARKABLE / FORCE_REPROCESS are actually respected."""
+    import main
+    captured = {}
+
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            pass
+        def print_startup_banner(self):
+            pass
+        async def process_content(self, *a, **k):
+            captured["args"] = a
+            captured["kwargs"] = k
+            return True
+
+    monkeypatch.setattr(main, "DispatchConverter", FakeConverter)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--skip-email"])
+
+    await main.main()
+
+    # No positional/keyword override of these — config governs.
+    assert captured.get("kwargs", {}).get("upload_to_remarkable") is None
+    assert captured.get("kwargs", {}).get("force_reprocess") is None
+    assert captured.get("args", ()) == ()
+
+
 # ---------------------------------------------------------------------------
 # Helpers (no imports from main.py yet — these tests drive the implementation)
 # ---------------------------------------------------------------------------

@@ -586,10 +586,9 @@ async def main():
             if not args.skip_email:
                 await _run_email_pipeline()
 
-            await converter.process_content(
-                force_reprocess=False,
-                upload_to_remarkable=True
-            )
+            # Defer to config (.env): process_content falls back to
+            # DEFAULT_FORCE_REPROCESS / DEFAULT_UPLOAD_TO_REMARKABLE when args are None.
+            await converter.process_content()
 
     except KeyboardInterrupt:
         print("\n👋 Process interrupted by user")
