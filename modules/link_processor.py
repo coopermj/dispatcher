@@ -341,6 +341,31 @@ class LinkProcessor:
             print(f"❌ Error loading page {url}: {e}")
             return None
     
+    # Class/id substrings marking regions whose links are NOT in-text citations:
+    # related/recommended widgets, comment threads, navigation, footers, etc.
+    # Following these turned single articles into 80-page multi-article PDFs.
+    _EXCLUDED_REGION_RE = re.compile(
+        r'related|recommend|more-from|morefrom|you-might|read-next|readnext|up-next|'
+        r'suggested|popular|trending|most-read|mostread|comment|disqus|'
+        r'sidebar|widget|shelf|digest|footer|nav|aside|promo|subscribe|newsletter',
+        re.IGNORECASE,
+    )
+
+    def _in_excluded_region(self, link_element):
+        """True if the link sits inside a related/recommended/comments/nav region
+        rather than the article body (so it's not a genuine in-text citation)."""
+        node = link_element
+        for _ in range(12):  # walk a bounded number of ancestors
+            node = getattr(node, 'parent', None)
+            if node is None or getattr(node, 'name', None) is None:
+                break
+            if node.name in ('aside', 'footer', 'nav'):
+                return True
+            tokens = ' '.join(node.get('class', []) or []) + ' ' + (node.get('id', '') or '')
+            if tokens.strip() and self._EXCLUDED_REGION_RE.search(tokens):
+                return True
+        return False
+
     def extract_links(self, soup, base_url):
         """Extract relevant article links from a page"""
         all_links = []
@@ -380,6 +405,12 @@ class LinkProcessor:
                 
                 print(f"🔗 Checking link: {link_text[:50]}... -> {absolute_url}")
                 
+                # Skip links in related/recommended/comments/nav regions — only
+                # genuine in-text citations should be followed.
+                if self._in_excluded_region(link):
+                    print(f"  ❌ In related/recommended/comments region")
+                    continue
+
                 # Apply URL-based filtering
                 if not self.should_follow_link(absolute_url):
                     print(f"  ❌ Filtered out by URL rules")
@@ -461,7 +492,7 @@ class LinkProcessor:
                 parent_text = parent_element.get_text().lower()
                 article_context_words = [
                     'read', 'article', 'story', 'report', 'analysis', 'see also',
-                    'related', 'previously', 'earlier', 'background', 'context'
+                    'background', 'context'
                 ]
                 if any(word in parent_text for word in article_context_words):
                     return True

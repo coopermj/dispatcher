@@ -93,7 +93,7 @@ SKIP_KEYWORDS = [k.strip().lower() for k in os.getenv('SKIP_KEYWORDS', 'podcast,
 
 # Enhanced PDF generation settings
 FOLLOW_ARTICLE_LINKS = get_bool_env('FOLLOW_ARTICLE_LINKS', False)
-MAX_LINKED_PAGES = get_int_env('MAX_LINKED_PAGES', 10)
+MAX_LINKED_PAGES = get_int_env('MAX_LINKED_PAGES', 3)
 LINK_FOLLOW_DEPTH = get_int_env('LINK_FOLLOW_DEPTH', 1)
 ALLOWED_LINK_DOMAINS = [d.strip() for d in os.getenv('ALLOWED_LINK_DOMAINS', '').split(',') if d.strip()]
 SKIP_LINK_PATTERNS = [p.strip() for p in os.getenv('SKIP_LINK_PATTERNS',
