@@ -35,7 +35,8 @@ def test_extract_links_keeps_in_text_excludes_widgets():
     assert "popular-trending-piece" not in urls      # more-from aside: excluded
 
 
-def test_max_linked_pages_capped_low():
-    """The cap should be small now (tuned down from 10)."""
+def test_max_linked_pages_is_bounded_global_cap():
+    """MAX_LINKED_PAGES is the global cap across all depth levels (spec
+    2026-05-29): big enough to be useful, small enough to keep PDFs sane."""
     from config.settings import MAX_LINKED_PAGES
-    assert MAX_LINKED_PAGES <= 3
+    assert 1 <= MAX_LINKED_PAGES <= 15
