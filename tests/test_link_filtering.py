@@ -35,6 +35,33 @@ def test_extract_links_keeps_in_text_excludes_widgets():
     assert "popular-trending-piece" not in urls      # more-from aside: excluded
 
 
+def test_post_type_wrapper_class_does_not_disable_link_following():
+    """Regression: CMS wrapper classes like post-type-newsletter on <main>
+    must not trip the 'newsletter' excluded-region token (that bug silently
+    disabled link-following for ALL newsletter articles). Genuine
+    newsletter widgets must still be excluded."""
+    NEWSLETTER_SAMPLE = """
+<html><body>
+  <main class="post-type-newsletter single-format-standard">
+    <article class="article-content">
+      <p>As we covered in <a href="/p/cited-in-newsletter-body-piece">an earlier analysis worth reading</a>,
+         the situation continues to develop in interesting ways.</p>
+      <div class="newsletter-signup">
+        <a href="/p/subscribe-widget-target-page">Subscribe to This Great Newsletter Today</a>
+      </div>
+    </article>
+  </main>
+</body></html>
+"""
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(browser_manager=None)
+    links = lp.extract_links(BeautifulSoup(NEWSLETTER_SAMPLE, "html.parser"),
+                             "https://thedispatch.com/newsletter/morning/some-article/")
+    urls = " ".join(l["url"] for l in links)
+    assert "cited-in-newsletter-body-piece" in urls   # body citation: kept
+    assert "subscribe-widget-target-page" not in urls  # signup widget: excluded
+
+
 def test_max_linked_pages_is_bounded_global_cap():
     """MAX_LINKED_PAGES is the global cap across all depth levels (spec
     2026-05-29): big enough to be useful, small enough to keep PDFs sane."""
