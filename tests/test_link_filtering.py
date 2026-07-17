@@ -67,3 +67,12 @@ def test_max_linked_pages_is_bounded_global_cap():
     2026-05-29): big enough to be useful, small enough to keep PDFs sane."""
     from config.settings import MAX_LINKED_PAGES
     assert 1 <= MAX_LINKED_PAGES <= 15
+
+
+def test_processing_summary_never_negative():
+    """Regression: early-return paths used to leave the page map empty,
+    making get_processing_summary() report linked_pages == -1."""
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(browser_manager=None)
+    summary = lp.get_processing_summary()
+    assert summary['linked_pages'] >= 0

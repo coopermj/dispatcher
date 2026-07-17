@@ -26,7 +26,6 @@ class LinkProcessor:
         self.browser_manager = browser_manager
         self.processed_links = set()
         self.link_to_page_map = {}  # Maps URLs to PDF page numbers
-        self.current_page_number = 1
         self._active_page = None  # Dedicated page for current processing
         self._owns_page = False   # Whether we created the page and should close it
 
@@ -75,7 +74,6 @@ class LinkProcessor:
             # Reset state for new article
             self.processed_links.clear()
             self.link_to_page_map.clear()
-            self.current_page_number = 1
 
             # Navigate to main article using dedicated page (no headers added)
             if not await self.browser_manager.navigate_to_url_with_page(article_url, self._active_page):
@@ -174,6 +172,8 @@ class LinkProcessor:
                 print("📄 No relevant links found, using main article PDF only")
                 import shutil
                 shutil.move(str(main_pdf), output_filename)
+                self.link_to_page_map = {article_url: 1}
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 return True
 
             # Step 3: BFS-capture linked pages (extracts deeper links as it goes)
@@ -183,6 +183,8 @@ class LinkProcessor:
                 print("📄 No accessible linked pages, using main article PDF only")
                 import shutil
                 shutil.move(str(main_pdf), output_filename)
+                self.link_to_page_map = {article_url: 1}
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 return True
 
             placeholders = sum(1 for s in linked_sections if s['blocked'])
@@ -208,6 +210,7 @@ class LinkProcessor:
                 print(f"❌ Merge failed, using main article only")
                 import shutil
                 shutil.copy(str(main_pdf), output_filename)
+                self.link_to_page_map = {article_url: 1}
                 success = True
 
             pdf_pages = [s['pdf'] for s in sections]
@@ -656,10 +659,11 @@ class LinkProcessor:
                 reason = f"navigation failed ({type(e).__name__})"
 
             if reason is None:
-                # Extract child links for the next BFS level while the DOM is live
-                content = await page.content()
-                soup = BeautifulSoup(content, 'html.parser')
-                child_links = self.extract_links(soup, target.url)
+                if target.depth < LINK_FOLLOW_DEPTH:
+                    # Extract child links for the next BFS level while the DOM is live
+                    content = await page.content()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    child_links = self.extract_links(soup, target.url)
 
                 await self.browser_manager.remove_header_elements_from_page(page)
                 await page.pdf(
@@ -697,30 +701,6 @@ class LinkProcessor:
         finally:
             await self.browser_manager.close_page(page)
 
-    async def remove_navigation_elements(self):
-        """Remove navigation elements from linked pages"""
-        try:
-            page = self._active_page
-            
-            cleanup_script = """
-            (() => {
-                // Remove navigation elements
-                ['nav', 'header', 'footer', '.navigation', '.navbar', '.menu'].forEach(selector => {
-                    document.querySelectorAll(selector).forEach(e => e.remove());
-                });
-                
-                // Remove ads and sidebars
-                ['.ad', '.advertisement', '.sidebar', '.widget'].forEach(selector => {
-                    document.querySelectorAll(selector).forEach(e => e.remove());
-                });
-            })();
-            """
-            
-            await page.evaluate(cleanup_script)
-            
-        except Exception as e:
-            print(f"⚠️ Error removing navigation elements: {e}")
-    
     def sanitize_filename(self, filename):
         """Sanitize filename for file system"""
         if not filename:
@@ -771,6 +751,7 @@ class LinkProcessor:
     async def _add_internal_links(self, pdf_path, sections):
         """Add a nested bookmark outline and rewrite URI link annotations
         pointing at included sections as internal GoTo destinations."""
+        tmp_path = None
         try:
             from PyPDF2 import PdfReader, PdfWriter
             from PyPDF2.generic import ArrayObject, NameObject, FloatObject
@@ -829,8 +810,11 @@ class LinkProcessor:
                     except Exception:
                         continue
 
-            with open(pdf_path, 'wb') as f:
+            import os
+            tmp_path = str(pdf_path) + '.tmp'
+            with open(tmp_path, 'wb') as f:
                 writer.write(f)
+            os.replace(tmp_path, pdf_path)
 
             print(f"✅ Rewrote {rewrites} in-text links as internal navigation; "
                   f"{len(sections)} bookmarked sections")
@@ -839,12 +823,14 @@ class LinkProcessor:
             print(f"⚠️ Could not add outline/internal links: {e}")
             import traceback
             traceback.print_exc()
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
 
     def get_processing_summary(self):
         """Get a summary of link processing"""
         return {
             'total_pages': len(self.link_to_page_map),
             'main_article_page': 1,
-            'linked_pages': len(self.link_to_page_map) - 1,
+            'linked_pages': max(0, len(self.link_to_page_map) - 1),
             'page_map': dict(self.link_to_page_map)
         }
