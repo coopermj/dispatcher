@@ -290,7 +290,13 @@ class LinkProcessor:
                 break
             if node.name in ('aside', 'footer', 'nav'):
                 return True
-            tokens = ' '.join(node.get('class', []) or []) + ' ' + (node.get('id', '') or '')
+            # CMS "post-type-*" classes (e.g. "post-type-newsletter") mark the
+            # content-type of the whole article wrapper, not a promo/widget
+            # region — drop them before matching so a bare "newsletter" or
+            # "digest" substring doesn't disqualify an entire newsletter-format
+            # article's body (e.g. Morning/Evening Dispatch, Boiling Frogs).
+            classes = [c for c in (node.get('class', []) or []) if not c.startswith('post-type-')]
+            tokens = ' '.join(classes) + ' ' + (node.get('id', '') or '')
             if tokens.strip() and self._EXCLUDED_REGION_RE.search(tokens):
                 return True
         return False
