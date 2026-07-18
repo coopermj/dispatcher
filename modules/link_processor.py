@@ -18,6 +18,22 @@ from config.settings import (
     DEBUG_DIR, SKIP_DOMAINS, MAX_CONCURRENT_LINKS
 )
 
+# Sites like CNN keep <html>/<body> at viewport height with overflow:hidden and
+# scroll an inner wrapper instead. Chromium's print layout then clips the
+# document to a single viewport and repeats it on every printed page, producing
+# a PDF of N identical pages. Restoring document-level flow before page.pdf()
+# lets the full article paginate normally.
+PRINT_FLOW_FIX_JS = """
+() => {
+    for (const el of [document.documentElement, document.body]) {
+        if (!el) continue;
+        el.style.setProperty('overflow', 'visible', 'important');
+        el.style.setProperty('height', 'auto', 'important');
+        el.style.setProperty('max-height', 'none', 'important');
+    }
+}
+"""
+
 
 class LinkProcessor:
     """Processes links within articles and creates multi-page PDFs"""
@@ -666,6 +682,11 @@ class LinkProcessor:
                     child_links = self.extract_links(soup, target.url)
 
                 await self.browser_manager.remove_header_elements_from_page(page)
+                # Some sites (e.g. CNN) scroll content in an inner wrapper and set
+                # overflow:hidden on <html>/<body>. Chromium's print pagination then
+                # clips to one viewport and repeats it on every page. Force
+                # document-level flow so the full article paginates normally.
+                await page.evaluate(PRINT_FLOW_FIX_JS)
                 await page.pdf(
                     path=str(pdf_path),
                     format='A4',
