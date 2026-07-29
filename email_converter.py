@@ -20,12 +20,14 @@ import traceback
 from pathlib import Path
 
 from modules import (
-    AuthManager, EmailHandler, BrowserManager, TrackingManager, ReMarkableManager
+    AuthManager, EmailHandler, BrowserManager, TrackingManager, ReMarkableManager,
+    LinkProcessor
 )
 from modules.utils import create_safe_pdf_filename
 from config.settings import (
     DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE,
     DEFAULT_FORCE_REPROCESS, DISPATCH_EMAIL_TRACKING_FILE, TRACKING_FILE,
+    FOLLOW_ARTICLE_LINKS,
 )
 
 
@@ -146,10 +148,18 @@ class DispatchPersistentConverter:
                     email_data['subject'], index=i, output_dir=output_path, prefix='dispatch'
                 ))
 
-                # Convert using the shared, image-safe conversion path
-                success = await self.browser_manager.convert_url_to_pdf_with_page(
-                    read_online_url, filename, page
-                )
+                # Convert using the shared, image-safe conversion path — with
+                # link following when enabled, matching the website pipeline
+                # (fresh LinkProcessor per article to avoid shared state).
+                if FOLLOW_ARTICLE_LINKS:
+                    link_processor = LinkProcessor(self.browser_manager)
+                    success = await link_processor.process_article_with_links(
+                        read_online_url, filename, page=page
+                    )
+                else:
+                    success = await self.browser_manager.convert_url_to_pdf_with_page(
+                        read_online_url, filename, page
+                    )
                 if not success:
                     print("❌ Failed to convert")
                     continue
