@@ -27,7 +27,7 @@ from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
     DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES, FOLLOW_ARTICLE_LINKS,
-    MAX_CONCURRENT_CONVERSIONS
+    MAX_CONCURRENT_CONVERSIONS, PRUNE_NEWS_ENABLED, PRUNE_NEWS_DAYS
 )
 from email_converter import run_email_converter
 
@@ -232,10 +232,20 @@ class DispatchConverter:
             
             # Calculate processing time
             self.stats['processing_time'] = time.time() - start_time
-            
+
             # Print final summary
             self.print_final_summary()
-            
+
+            # Prune old unstarred docs from the device so News doesn't grow
+            # without bound. Never lets a prune problem fail the run.
+            if upload_to_remarkable and PRUNE_NEWS_ENABLED:
+                try:
+                    from prune_news import run_prune
+                    print(f"\n🧹 Pruning unstarred dispatch docs older than {PRUNE_NEWS_DAYS} days...")
+                    run_prune(confirm=True, dispatch_only=True)
+                except Exception as e:
+                    print(f"⚠️ Prune step failed (run continues): {e}")
+
             return True
             
         except Exception as e:

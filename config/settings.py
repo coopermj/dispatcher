@@ -159,6 +159,9 @@ PDF_MARGINS = {
 DEFAULT_RMAPI_PATH = os.getenv('RMAPI_PATH', "~/rmapi/rmapi")
 REMARKABLE_FOLDER = os.getenv('REMARKABLE_FOLDER', "News")
 RMAPI_TIMEOUT = get_int_env('RMAPI_TIMEOUT', 60)
+# Automatic pruning of old unstarred docs from the News folder after each run
+PRUNE_NEWS_ENABLED = get_bool_env('PRUNE_NEWS_ENABLED', True)
+PRUNE_NEWS_DAYS = get_int_env('PRUNE_NEWS_DAYS', 10)
 
 # The Dispatch website settings
 DISPATCH_BASE_URL = os.getenv('DISPATCH_BASE_URL', "https://thedispatch.com")
