@@ -412,8 +412,11 @@ class LinkProcessor:
     def is_likely_article_link(self, link_element, link_text, url):
         """Additional checks to determine if a link is likely to an article"""
         try:
-            # Skip very short link text (likely navigation)
-            if len(link_text) < 5:
+            # In-text citations in newsletter prose are often single words
+            # ("says", "too"), so short anchors are legitimate — the URL has
+            # already passed the article-URL rules by the time we're called.
+            # Only drop empty or symbol-only anchors (icons, arrows).
+            if len(link_text.strip()) < 2 or not any(c.isalnum() for c in link_text):
                 return False
             
             # Skip links that are clearly navigation

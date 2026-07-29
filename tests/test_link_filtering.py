@@ -77,3 +77,25 @@ def test_processing_summary_never_negative():
     lp = LinkProcessor(browser_manager=None)
     summary = lp.get_processing_summary()
     assert summary['linked_pages'] >= 0
+
+SHORT_ANCHOR_SAMPLE = """
+<html><body>
+  <article class="article-content">
+    <p>He <a href="/p/short-anchor-cited-piece">says</a> it plainly, and the
+       <a href="/p/symbol-only-target">&#187;</a> icon links elsewhere.</p>
+  </article>
+</body></html>
+"""
+
+
+def test_short_anchor_citations_are_followed():
+    """One-word in-text citations ("says", "too") are genuine links in
+    newsletter prose and must be followed (loosened 2026-07-28). Only
+    empty/symbol-only anchors are dropped."""
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(browser_manager=None)
+    links = lp.extract_links(BeautifulSoup(SHORT_ANCHOR_SAMPLE, "html.parser"),
+                             "https://thedispatch.com/article/main/")
+    urls = " ".join(l["url"] for l in links)
+    assert "short-anchor-cited-piece" in urls   # one-word citation: kept
+    assert "symbol-only-target" not in urls      # symbol-only anchor: dropped
