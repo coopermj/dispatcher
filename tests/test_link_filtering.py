@@ -64,9 +64,10 @@ def test_post_type_wrapper_class_does_not_disable_link_following():
 
 def test_max_linked_pages_is_bounded_global_cap():
     """MAX_LINKED_PAGES is the global cap across all depth levels (spec
-    2026-05-29): big enough to be useful, small enough to keep PDFs sane."""
+    2026-05-29). User raised it to 40 (2026-07-28) to capture effectively
+    every citation; the bound only guards against a runaway misconfig."""
     from config.settings import MAX_LINKED_PAGES
-    assert 1 <= MAX_LINKED_PAGES <= 15
+    assert 1 <= MAX_LINKED_PAGES <= 50
 
 
 def test_processing_summary_never_negative():
