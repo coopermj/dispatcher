@@ -17,6 +17,17 @@ from config.settings import DEFAULT_RMAPI_PATH, REMARKABLE_FOLDER, RMAPI_TIMEOUT
 _FILENAME_PREFIX_RE = re.compile(r'^dispatch_(?:website_|email_)?\d+_', re.IGNORECASE)
 
 
+def upload_timeout_for(pdf_path):
+    """Seconds to allow an `rmapi put`, scaled to the file: RMAPI_TIMEOUT as
+    the floor plus ~10s/MB. Link-followed PDFs run 100MB+ and a flat 60s
+    timeout silently killed every one of their uploads."""
+    try:
+        size_mb = os.path.getsize(pdf_path) / 1_000_000
+    except OSError:
+        size_mb = 0
+    return max(RMAPI_TIMEOUT, int(size_mb * 10))
+
+
 def _normalize_title(text):
     """Lowercase and strip all non-alphanumerics (same scheme as prune_news.py)."""
     return re.sub(r'[^a-z0-9]', '', (text or '').lower())
@@ -164,8 +175,9 @@ class ReMarkableManager:
             upload_cmd = [self.rmapi_path, 'put', str(pdf_path), folder_name]
             print(f"🔧 Running: {' '.join(upload_cmd)}")
 
+            put_timeout = upload_timeout_for(pdf_path)
             for attempt in range(1, 4):
-                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=RMAPI_TIMEOUT)
+                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=put_timeout)
                 if result.returncode == 0:
                     print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{folder_name}")
                     return True
