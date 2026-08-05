@@ -110,3 +110,4 @@ rmapi
 rmapi.exe
 # Email pipeline tracking (contains email subjects/senders — keep private)
 dispatch_email_tracking.json
+last_run_failures.md

@@ -38,6 +38,12 @@ class AuthManager:
             with open(TOKEN_FILE, 'rb') as token:
                 creds = pickle.load(token)
 
+        # A token from before a scope addition (e.g. gmail.send for failure
+        # alerts) stays "valid" but can't use the new scope — force re-consent.
+        if creds and not set(GOOGLE_SCOPES).issubset(set(creds.scopes or [])):
+            print("🔐 Stored Google token is missing newly required scopes — re-consent needed")
+            creds = None
+
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:

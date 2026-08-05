@@ -76,10 +76,15 @@ if not DEBUG_DIR.is_absolute():
 # Google OAuth scopes
 GOOGLE_SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send',  # failure alert emails
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile',
     'openid'
 ]
+
+# Failure alerting (email + macOS notification when a run has failures)
+ALERTS_ENABLED = get_bool_env('ALERTS_ENABLED', True)
+ALERT_EMAIL = os.getenv('ALERT_EMAIL', 'micah.cooper@gmail.com')
 
 # Processing mode settings
 PROCESSING_MODE = os.getenv('PROCESSING_MODE', 'website').lower()  # 'email' or 'website'

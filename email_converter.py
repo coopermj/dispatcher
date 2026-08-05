@@ -24,6 +24,7 @@ from modules import (
     LinkProcessor
 )
 from modules.utils import create_safe_pdf_filename
+from modules.alerts import record_failure, alert_on_failures
 from config.settings import (
     DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE,
     DEFAULT_FORCE_REPROCESS, DISPATCH_EMAIL_TRACKING_FILE, TRACKING_FILE,
@@ -48,6 +49,9 @@ class DispatchPersistentConverter:
         self.web_processed_urls = web_tracking.get_processed_urls()
         if self.web_processed_urls:
             print(f"🔗 Loaded {len(self.web_processed_urls)} URLs from web scanner (cross-dedup)")
+
+        # Failure records for end-of-run alerting (modules/alerts.py)
+        self.failures = []
 
     def is_url_already_processed_by_web(self, url):
         """True if the website pipeline already produced a PDF for this URL."""
@@ -162,6 +166,9 @@ class DispatchPersistentConverter:
                     )
                 if not success:
                     print("❌ Failed to convert")
+                    record_failure(self.failures, "conversion",
+                                   email_data.get('subject', 'unknown email'),
+                                   "PDF conversion failed")
                     continue
 
                 success_count += 1
@@ -175,6 +182,8 @@ class DispatchPersistentConverter:
                         remarkable_uploaded = True
                     else:
                         print(f"⚠️ Failed to upload {filename} to ReMarkable")
+                        record_failure(self.failures, "upload", Path(filename).name,
+                                       "upload_if_new failed (see log)")
 
                 if self.tracking_manager.mark_email_processed(
                     email_data, filename, remarkable_uploaded, success=True
@@ -194,6 +203,7 @@ class DispatchPersistentConverter:
 
         finally:
             await self.browser_manager.close_browser_session()
+            alert_on_failures(self.failures, run_label="email pipeline")
 
 
 async def run_email_converter():

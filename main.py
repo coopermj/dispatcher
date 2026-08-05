@@ -19,10 +19,11 @@ from modules import (
     TrackingManager, ReMarkableManager, WebsiteScanner, LinkProcessor
 )
 from modules.utils import (
-    setup_logging, create_safe_pdf_filename, 
+    setup_logging, create_safe_pdf_filename,
     create_summary_report, check_dependencies,
     format_file_size, get_file_info
 )
+from modules.alerts import record_failure, alert_on_failures
 from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
@@ -76,6 +77,8 @@ class DispatchConverter:
             'total_linked_pages': 0,
             'follow_links_enabled': FOLLOW_ARTICLE_LINKS
         }
+        # Failure records for end-of-run alerting (modules/alerts.py)
+        self.failures = []
     
     def print_startup_banner(self):
         """Print application startup banner"""
@@ -242,15 +245,28 @@ class DispatchConverter:
                 try:
                     from prune_news import run_prune
                     print(f"\n🧹 Pruning unstarred dispatch docs older than {PRUNE_NEWS_DAYS} days...")
-                    run_prune(confirm=True, dispatch_only=True)
+                    prune_result = run_prune(confirm=True, dispatch_only=True)
+                    if prune_result is None:
+                        record_failure(self.failures, "rmapi", "prune step",
+                                       "could not query the reMarkable device")
+                    elif prune_result[1] > 0:
+                        record_failure(self.failures, "prune",
+                                       f"{prune_result[1]} doc(s)",
+                                       "deletion failed (will retry next run)")
                 except Exception as e:
                     print(f"⚠️ Prune step failed (run continues): {e}")
+                    record_failure(self.failures, "prune", "prune step", str(e))
 
+            alert_on_failures(self.failures,
+                              run_label=f"{self.processing_mode} pipeline")
             return True
-            
+
         except Exception as e:
             print(f"❌ Error during processing: {e}")
             print(f"🔧 Debug info: {traceback.format_exc()}")
+            record_failure(self.failures, "conversion", "run aborted", str(e))
+            alert_on_failures(self.failures,
+                              run_label=f"{self.processing_mode} pipeline")
             return False
         
         finally:
@@ -329,6 +345,9 @@ class DispatchConverter:
             if not content_url:
                 print(f"❌ [{index}] No URL found for {item_type}, skipping...")
                 self.stats['failed_conversions'] += 1
+                record_failure(self.failures, "conversion",
+                               content_data.get('subject', f'{item_type} #{index}'),
+                               "no read-online URL found")
                 return False
 
             print(f"🔗 [{index}] Found URL: {content_url}")
@@ -374,6 +393,9 @@ class DispatchConverter:
             if not success:
                 print(f"❌ [{index}] Failed to convert to PDF")
                 self.stats['failed_conversions'] += 1
+                record_failure(self.failures, "conversion",
+                               content_data.get('subject', f'item #{index}'),
+                               "PDF conversion failed")
                 return False
 
             # Update file size stats
@@ -392,6 +414,8 @@ class DispatchConverter:
                 else:
                     self.stats['remarkable_failures'] += 1
                     print(f"⚠️ [{index}] Failed to upload to ReMarkable")
+                    record_failure(self.failures, "upload", pdf_filename.name,
+                                   "upload_if_new failed after retries (see log)")
 
             # Mark as processed in tracking
             tracking_success = self.tracking_manager.mark_email_processed(
@@ -413,6 +437,9 @@ class DispatchConverter:
             item_type = "email" if (effective_mode or self.processing_mode) == 'email' else "article"
             print(f"❌ [{index}] Error processing {item_type}: {e}")
             self.stats['failed_conversions'] += 1
+            record_failure(self.failures, "conversion",
+                           content_data.get('subject', f'{item_type} #{index}'),
+                           f"exception: {e}")
             return False
         finally:
             # Clean up the page
