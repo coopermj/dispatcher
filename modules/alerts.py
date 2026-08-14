@@ -58,7 +58,11 @@ def build_failure_report(failures, run_label=""):
 
 
 def send_macos_notification(title, message):
-    """Notification Center banner. Best-effort."""
+    """Notification Center banner. Best-effort; no-op off macOS (headless
+    Linux deployments rely on the email + report channels)."""
+    import platform
+    if platform.system() != "Darwin":
+        return False
     try:
         script = f'display notification "{message[:200]}" with title "{title[:80]}" sound name "Basso"'
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
