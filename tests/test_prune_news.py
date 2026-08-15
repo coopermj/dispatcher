@@ -89,3 +89,47 @@ def test_cleanup_keeps_expired_entries(tmp_path):
     })
     tm.cleanup_tracking_data()
     assert "fp1" in tm.processed_emails
+
+
+# ---- local PDF cleanup ----
+
+def test_local_prune_deletes_old_uploaded_pdfs(tmp_path):
+    import os, time
+    from prune_news import select_local_prunable
+    old = tmp_path / "dispatch_001_Old.pdf"
+    old.write_bytes(b"x")
+    eleven_days = 11 * 86400
+    os.utime(old, (time.time() - eleven_days, time.time() - eleven_days))
+    tracking = {str(old): {"remarkable_uploaded": True}}
+    assert select_local_prunable([old], tracking, days=10) == [old]
+
+
+def test_local_prune_keeps_recent_and_pending(tmp_path):
+    import os, time
+    from prune_news import select_local_prunable
+    recent = tmp_path / "dispatch_002_Recent.pdf"     # uploaded but young
+    recent.write_bytes(b"x")
+    pending = tmp_path / "dispatch_003_Pending.pdf"   # old but NOT uploaded
+    pending.write_bytes(b"x")
+    old = time.time() - 11 * 86400
+    os.utime(pending, (old, old))
+    tracking = {str(recent): {"remarkable_uploaded": True},
+                str(pending): {"remarkable_uploaded": False}}
+    assert select_local_prunable([recent, pending], tracking, days=10) == []
+
+
+def test_local_prune_expired_and_orphans_go(tmp_path):
+    import os, time
+    from prune_news import select_local_prunable
+    expired = tmp_path / "dispatch_004_Expired.pdf"   # pruned from device
+    expired.write_bytes(b"x")
+    orphan = tmp_path / "dispatch_005_Orphan.pdf"     # no tracking entry
+    orphan.write_bytes(b"x")
+    old = time.time() - 11 * 86400
+    for f in (expired, orphan):
+        os.utime(f, (old, old))
+    tracking = {str(expired): {"remarkable_uploaded": False,
+                               "remarkable_expired": True}}
+    got = select_local_prunable([expired, orphan], tracking, days=10)
+    assert sorted(p.name for p in got) == ["dispatch_004_Expired.pdf",
+                                           "dispatch_005_Orphan.pdf"]

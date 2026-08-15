@@ -74,6 +74,56 @@ def mark_expired_in_tracking(rm_name):
             save_json(tracking_path, data)
 
 
+def select_local_prunable(pdf_paths, tracking_by_path, days):
+    """Local PDFs safe to delete: older than `days` (mtime) AND either
+    confirmed on the device (remarkable_uploaded), already pruned from it
+    (remarkable_expired), or orphaned (no tracking entry — nothing will ever
+    retry them). Pending uploads (tracked, not uploaded, not expired) are
+    kept regardless of age so --retry-uploads still has the file."""
+    import time
+    cutoff = time.time() - days * 86400
+    prunable = []
+    for p in pdf_paths:
+        try:
+            if p.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        entry = tracking_by_path.get(str(p))
+        if entry is None or entry.get("remarkable_uploaded") or entry.get("remarkable_expired"):
+            prunable.append(p)
+    return prunable
+
+
+def run_local_prune(days, pdf_dirs=None):
+    """Delete old local PDFs whose device fate is settled. Returns count
+    deleted; never raises."""
+    base = Path(__file__).parent
+    if pdf_dirs is None:
+        pdf_dirs = [base / "dispatch_pdfs", base / "dispatch_persistent_pdfs"]
+    tracking_by_path = {}
+    for tf in TRACKING_FILES:
+        data = load_json(tf) or {}
+        for entry in data.values():
+            pp = entry.get("pdf_path")
+            if pp:
+                tracking_by_path[pp] = entry
+    deleted = 0
+    for d in pdf_dirs:
+        if not Path(d).is_dir():
+            continue
+        pdfs = sorted(Path(d).glob("*.pdf"))
+        for p in select_local_prunable(pdfs, tracking_by_path, days):
+            try:
+                p.unlink()
+                deleted += 1
+            except OSError as e:
+                print(f"   ⚠️ could not delete {p.name}: {e}")
+    if deleted:
+        print(f"🧹 Deleted {deleted} old local PDF(s) already settled on the device")
+    return deleted
+
+
 def is_pipeline_doc(entry):
     """True for docs this pipeline generated (dispatch_* names). Manually
     added files (WSJ papers, saved articles) are never auto-pruned."""

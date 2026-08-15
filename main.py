@@ -257,6 +257,14 @@ class DispatchConverter:
                     print(f"⚠️ Prune step failed (run continues): {e}")
                     record_failure(self.failures, "prune", "prune step", str(e))
 
+                # Local disk hygiene: drop PDFs whose device fate is settled
+                try:
+                    from prune_news import run_local_prune
+                    run_local_prune(days=PRUNE_NEWS_DAYS)
+                except Exception as e:
+                    print(f"⚠️ Local PDF cleanup failed (run continues): {e}")
+                    record_failure(self.failures, "prune", "local PDF cleanup", str(e))
+
             alert_on_failures(self.failures,
                               run_label=f"{self.processing_mode} pipeline")
             return True
