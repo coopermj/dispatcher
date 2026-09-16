@@ -31,13 +31,13 @@ if ! flock -n 9; then
     exit 0
 fi
 # Belt and suspenders: also catch runs started OUTSIDE this wrapper
-# (a manual ./main.py holds no lock).
-if pgrep -f "python3? \./main\.py" >/dev/null 2>&1; then
+# (a manual ./main.py or .venv/bin/python main.py holds no lock).
+if pgrep -f "python3? (\./)?main\.py" >/dev/null 2>&1; then
     collision_alert
     exit 0
 fi
 
-./main.py > cron_run.log 2>&1
+"$PY" main.py > cron_run.log 2>&1
 rc=$?
 
 # rc=2 means main.py failed but already sent its own failure report — don't
