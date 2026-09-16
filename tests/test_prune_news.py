@@ -133,3 +133,33 @@ def test_local_prune_expired_and_orphans_go(tmp_path):
     got = select_local_prunable([expired, orphan], tracking, days=10)
     assert sorted(p.name for p in got) == ["dispatch_004_Expired.pdf",
                                            "dispatch_005_Orphan.pdf"]
+
+
+# ---------------------------------------------------------------------------
+# Debug artefact hygiene: debug_html/ snapshots and temp_pdfs/ leftovers
+# ---------------------------------------------------------------------------
+
+def _age(path, days):
+    import os, time
+    t = time.time() - days * 86400
+    os.utime(path, (t, t))
+
+
+def test_debug_prune_removes_old_snapshots_and_temp_dirs_only(tmp_path):
+    from prune_news import run_debug_prune
+    old_html = tmp_path / "page_20260401_000000_before_cleanup.html"; old_html.write_text("x"); _age(old_html, 30)
+    new_html = tmp_path / "page_20260916_000000_before_cleanup.html"; new_html.write_text("x")
+    tmp = tmp_path / "temp_pdfs"
+    old_dir = tmp / "old_article"; old_dir.mkdir(parents=True); (old_dir / "page_1_main.pdf").write_bytes(b"x"); _age(old_dir, 30)
+    new_dir = tmp / "new_article"; new_dir.mkdir(); (new_dir / "page_1_main.pdf").write_bytes(b"x")
+
+    removed = run_debug_prune(days=10, debug_dir=tmp_path)
+
+    assert removed == 2
+    assert not old_html.exists() and new_html.exists()
+    assert not old_dir.exists() and new_dir.exists()
+
+
+def test_debug_prune_missing_dir_is_noop(tmp_path):
+    from prune_news import run_debug_prune
+    assert run_debug_prune(days=10, debug_dir=tmp_path / "nope") == 0

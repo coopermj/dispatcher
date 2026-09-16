@@ -30,7 +30,10 @@ WORKAROUNDS = {
     "prune": ".venv/bin/python prune_news.py --confirm  (also retries automatically next run)",
     "rmapi": "Check `~/rmapi/rmapi ls`; if auth expired, re-register the device "
              "with a code from https://my.remarkable.com/device/desktop/connect",
-    "auth": "Run `.venv/bin/python main.py` interactively once to re-consent to Google",
+    "auth": "Dispatch cookies expired: run ./refresh_tokens_mac.sh on the Mac (logs in, copies "
+            "tokens to the box). Google token: run `.venv/bin/python main.py` interactively to re-consent",
+    "scan": "Check debug_html/ for the latest snapshot — the site may be blocking the "
+            "scraper or the Dispatch cookies expired; re-run .venv/bin/python main.py interactively",
 }
 DEFAULT_WORKAROUND = "Check the run log; re-run .venv/bin/python main.py after fixing."
 

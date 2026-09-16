@@ -201,7 +201,7 @@ class BrowserManager:
             )
             print("✅ Content loaded")
             return True
-        except:
+        except Exception:
             print("⚠️ Standard content selectors not found, but continuing...")
             return False
 
@@ -270,7 +270,7 @@ class BrowserManager:
             try:
                 await self.page.wait_for_selector('article, .article, .post, .content, main', timeout=10000)
                 print("✅ Content loaded")
-            except:
+            except Exception:
                 print("⚠️ Standard content selectors not found, but continuing...")
 
             await asyncio.sleep(2)
@@ -295,7 +295,7 @@ class BrowserManager:
             )
 
             # Verify PDF was created
-            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 5000:
+            if os.path.exists(output_filename) and os.path.getsize(output_filename) >= MIN_PDF_SIZE_BYTES:
                 print(f"✅ PDF created successfully: {output_filename}")
                 return True
             else:
@@ -367,7 +367,7 @@ class BrowserManager:
                 # Wait for page to be stable
                 try:
                     await use_page.wait_for_load_state('networkidle', timeout=10000)
-                except:
+                except Exception:
                     pass  # Continue even if timeout
                 await asyncio.sleep(2)
 
@@ -379,7 +379,7 @@ class BrowserManager:
             try:
                 await use_page.wait_for_selector('article, .article, .post, .content, main', timeout=10000)
                 print("✅ Content loaded")
-            except:
+            except Exception:
                 print("⚠️ Standard content selectors not found, but continuing...")
 
             await asyncio.sleep(1)
@@ -418,7 +418,7 @@ class BrowserManager:
             """)
             try:
                 await use_page.wait_for_load_state('networkidle', timeout=8000)
-            except:
+            except Exception:
                 pass
 
             # Generate PDF
@@ -432,7 +432,7 @@ class BrowserManager:
             )
 
             # Verify PDF was created
-            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 5000:
+            if os.path.exists(output_filename) and os.path.getsize(output_filename) >= MIN_PDF_SIZE_BYTES:
                 print(f"✅ PDF created successfully: {output_filename}")
                 return True
             else:
@@ -565,13 +565,13 @@ class BrowserManager:
                     timeout=10000
                 )
                 print("✅ Content loaded")
-            except:
+            except Exception:
                 print("⚠️ Standard content selectors not found, but continuing...")
 
             # Wait for page to be fully stable (network idle)
             try:
                 await use_page.wait_for_load_state('networkidle', timeout=5000)
-            except:
+            except Exception:
                 pass  # Continue even if timeout
 
             await asyncio.sleep(1)

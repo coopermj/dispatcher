@@ -40,7 +40,9 @@ fi
 ./main.py > cron_run.log 2>&1
 rc=$?
 
-if [ "$rc" -ne 0 ]; then
+# rc=2 means main.py failed but already sent its own failure report — don't
+# double-alert. Anything else nonzero is a hard crash it never got to report.
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
     RC="$rc" "$PY" - <<'PYEOF'
 import os
 from modules.alerts import send_email_alert

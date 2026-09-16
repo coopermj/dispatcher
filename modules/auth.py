@@ -6,6 +6,7 @@ Authentication manager for Google OAuth and The Dispatch
 import os
 import pickle
 import json
+import sys
 import asyncio
 from pathlib import Path
 
@@ -16,8 +17,44 @@ from googleapiclient.discovery import build
 
 from config.settings import (
     GOOGLE_SCOPES, CREDENTIALS_FILE, TOKEN_FILE, COOKIES_FILE,
-    DISPATCH_BASE_URL, LOGIN_INDICATORS, LOGGED_IN_INDICATORS
+    DISPATCH_BASE_URL, BROWSER_HEADLESS
 )
+
+# Reads the page's own login state. The Dispatch gates its account UI with
+# Alpine `x-show="$store.user.loaded && $store.user.valid"`; the markup itself
+# (Log Out / My Account) is in the DOM for every visitor, so only the store
+# tells the truth. Polls briefly because the store is populated asynchronously
+# (Piano) after load. Returns {loaded, valid}; never throws into Python.
+LOGIN_STATE_JS = """
+async () => {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    try {
+      const s = window.Alpine && Alpine.store && Alpine.store('user');
+      if (s && s.loaded) return {loaded: true, valid: !!s.valid};
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return {loaded: false, valid: false};
+}
+"""
+
+
+async def is_logged_in(page):
+    """True only when the page reports a loaded AND valid member session.
+
+    Anything else — store never loaded, Alpine missing, evaluate failed — is
+    False, so an undetectable state fails closed and gets alerted rather than
+    proceeding as if signed in (the failure mode this replaced).
+    """
+    try:
+        state = await page.evaluate(LOGIN_STATE_JS)
+    except Exception as e:
+        print(f"⚠️ Could not read login state: {e}")
+        return False
+    if not isinstance(state, dict):
+        return False
+    return bool(state.get('loaded')) and bool(state.get('valid'))
 
 
 class AuthManager:
@@ -142,26 +179,13 @@ class AuthManager:
             await page.goto(DISPATCH_BASE_URL, timeout=30000)
             await asyncio.sleep(3)
 
-            page_content = await page.content()
-
-            # Look for indicators that we're logged in vs need to log in
-            has_login_indicators = any(indicator in page_content.lower() for indicator in LOGIN_INDICATORS)
-            has_logged_in_indicators = any(indicator in page_content.lower() for indicator in LOGGED_IN_INDICATORS)
-
-            # Account indicators win: if present, we're logged in. Only reject when there's
-            # an explicit sign-in prompt AND no account indicators at all. Anything else is
-            # ambiguous, so proceed with the saved cookies (mirrors email_converter.py).
-            if has_logged_in_indicators:
+            if await is_logged_in(page):
                 print("✅ Already authenticated with saved cookies!")
                 self.authenticated_with_dispatch = True
                 return True
-            elif has_login_indicators and not has_logged_in_indicators:
-                print("❌ Not authenticated - need to log in")
-                return False
-            else:
-                print("✅ Authentication state ambiguous, proceeding with saved cookies")
-                self.authenticated_with_dispatch = True
-                return True
+
+            print("❌ Not authenticated - the site reports no valid member session")
+            return False
 
         except Exception as e:
             print(f"⚠️ Error testing authentication: {e}")
@@ -169,71 +193,19 @@ class AuthManager:
 
     async def _check_logged_in_quietly(self, page):
         """Quietly check if logged in without navigation or verbose output"""
-        try:
-            # Check for logged-in specific elements using JavaScript
-            # This is more reliable than text matching since menus always show "sign in"
-            is_logged_in = await page.evaluate("""
-                () => {
-                    // Check for user avatar/profile elements (common in logged-in state)
-                    const avatarSelectors = [
-                        '[data-testid="user-avatar"]',
-                        '[data-testid="account-menu"]',
-                        '.user-avatar',
-                        '.avatar',
-                        '.profile-icon',
-                        '[aria-label*="account"]',
-                        '[aria-label*="profile"]',
-                        'a[href*="/account"]',
-                        'a[href*="/settings"]',
-                        'button[aria-label*="menu"]'
-                    ];
+        return await is_logged_in(page)
 
-                    for (const selector of avatarSelectors) {
-                        if (document.querySelector(selector)) {
-                            return true;
-                        }
-                    }
+    async def authenticate_with_dispatch(self, page, browser_context, interactive=None):
+        """Authenticate with The Dispatch using saved cookies or manual login.
 
-                    // Check if there's a "Log out" or "Sign out" link/button
-                    const links = document.querySelectorAll('a, button');
-                    for (const el of links) {
-                        const text = el.textContent.toLowerCase();
-                        if (text.includes('log out') || text.includes('sign out') || text.includes('logout')) {
-                            return true;
-                        }
-                    }
-
-                    // Check for subscriber-only content being visible (no paywall modal)
-                    const paywallSelectors = [
-                        '[class*="paywall"]',
-                        '[class*="subscribe-modal"]',
-                        '[data-testid="paywall"]'
-                    ];
-                    const hasPaywall = paywallSelectors.some(s => document.querySelector(s));
-
-                    // If we're on an article page and there's no paywall, likely logged in
-                    const isArticle = document.querySelector('article') !== null;
-                    if (isArticle && !hasPaywall) {
-                        // Check article has substantial content (not truncated)
-                        const articleText = document.querySelector('article')?.textContent || '';
-                        if (articleText.length > 2000) {
-                            return true;
-                        }
-                    }
-
-                    return false;
-                }
-            """)
-
-            return is_logged_in
-
-        except Exception:
-            return False
-
-    async def authenticate_with_dispatch(self, page, browser_context):
-        """Authenticate with The Dispatch using saved cookies or manual login"""
+        Returns False (never a hopeful True) when we cannot confirm a login, so the
+        caller can alert. `interactive=None` auto-detects: a manual login is only
+        possible with a terminal to read and a visible browser window to type into.
+        """
         if self.authenticated_with_dispatch:
             return True
+        if interactive is None:
+            interactive = sys.stdin.isatty() and not BROWSER_HEADLESS
 
         try:
             print("🔐 Authenticating with The Dispatch...")
@@ -247,6 +219,13 @@ class AuthManager:
                     return True
                 else:
                     print("🔄 Saved cookies expired or invalid, need fresh authentication")
+
+            if not interactive:
+                # Cron / headless: nobody can complete a magic-link login here. Fail
+                # closed and keep the existing cookie file for the interactive refresh.
+                print("❌ Not logged in to The Dispatch and no interactive session to log in with")
+                print("💡 Refresh cookies: run ./refresh_tokens_mac.sh (or main.py in a terminal)")
+                return False
 
             # If we get here, we need to authenticate manually
             print("🔑 Manual authentication required")
@@ -293,17 +272,12 @@ class AuthManager:
                 self.authenticated_with_dispatch = True
                 return True
             else:
-                print("❌ Authentication verification failed")
-                await self.save_dispatch_cookies(browser_context)
-                print("⚠️ Proceeding anyway - cookies saved for future attempts")
-                self.authenticated_with_dispatch = True
-                return True
+                print("❌ Authentication verification failed — existing cookie file left untouched")
+                return False
 
         except Exception as e:
             print(f"❌ Authentication error: {e}")
-            print("🔧 Please complete authentication manually if needed")
-            self.authenticated_with_dispatch = True
-            return True
+            return False
 
     def get_gmail_service(self):
         """Get authenticated Gmail service"""

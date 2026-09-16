@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from config.settings import TRACKING_FILE
+from config.settings import TRACKING_FILE, MIN_PDF_SIZE_BYTES
 
 
 class TrackingManager:
@@ -204,7 +204,7 @@ class TrackingManager:
         # Check minimum file size
         try:
             file_size = os.path.getsize(pdf_path)
-            if file_size < 5000:  # Minimum size for valid PDF
+            if file_size < MIN_PDF_SIZE_BYTES:
                 print(f"⚠️ PDF file too small ({file_size} bytes), not tracking: {pdf_path}")
                 return False
         except OSError:

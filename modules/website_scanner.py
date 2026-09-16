@@ -17,6 +17,10 @@ from config.settings import (
 )
 
 
+# Path segments that mark index/listing pages rather than articles.
+NON_ARTICLE_SEGMENTS = {'author', 'tag', 'category', 'search'}
+
+
 class WebsiteScanner:
     """Scans The Dispatch website for articles to convert"""
 
@@ -367,9 +371,13 @@ class WebsiteScanner:
                     print(f"⏭️  Skipping (too old): {article['title'][:50]}...")
                     continue
 
-            # Skip obvious non-article URLs
-            url_lower = article['url'].lower()
-            if any(skip in url_lower for skip in ['author', 'tag', 'category', 'search']):
+            # Skip index pages (/author/x, /tag/x, /category/x, /search) by path
+            # segment. A substring test here silently dropped real articles whose
+            # slugs merely contain 'tag' (pentagon), 'author' (authoritarian) or
+            # 'search' (research).
+            segments = {s.lower() for s in urlparse(article['url']).path.split('/') if s}
+            if segments & NON_ARTICLE_SEGMENTS:
+                print(f"⏭️  Skipping (index page): {article['url']}")
                 continue
 
             filtered.append(article)

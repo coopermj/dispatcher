@@ -5,6 +5,7 @@ Link processor for following and including linked pages in PDFs
 
 import asyncio
 import re
+import shutil
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from pathlib import Path
@@ -15,7 +16,7 @@ from modules.blocked_detection import detect_block, placeholder_html
 from config.settings import (
     FOLLOW_ARTICLE_LINKS, MAX_LINKED_PAGES, LINK_FOLLOW_DEPTH,
     ALLOWED_LINK_DOMAINS, SKIP_LINK_PATTERNS, LINKED_PAGE_TIMEOUT,
-    DEBUG_DIR, SKIP_DOMAINS, MAX_CONCURRENT_LINKS
+    DEBUG_DIR, SKIP_DOMAINS, MAX_CONCURRENT_LINKS, MIN_PDF_SIZE_BYTES
 )
 
 # Sites like CNN keep <html>/<body> at viewport height with overflow:hidden and
@@ -79,6 +80,7 @@ class LinkProcessor:
                 self._active_page = self.browser_manager.get_page()
                 self._owns_page = False
 
+        temp_dir = None  # removed in `finally` on every exit path, not just success
         try:
             # Step 1: Check if we can merge PDFs first
             merge_available = await self.test_merge_availability()
@@ -99,7 +101,7 @@ class LinkProcessor:
             # Wait for page to be fully stable before extracting content
             try:
                 await self._active_page.wait_for_load_state('networkidle', timeout=10000)
-            except:
+            except Exception:
                 pass  # Continue even if timeout - page may still be usable
             await asyncio.sleep(1)  # Extra stability wait
 
@@ -156,7 +158,7 @@ class LinkProcessor:
             """)
             try:
                 await self._active_page.wait_for_load_state('networkidle', timeout=8000)
-            except:
+            except Exception:
                 pass
 
             # Generate PDF directly from current page state (don't re-navigate)
@@ -171,7 +173,7 @@ class LinkProcessor:
 
             # Check if PDF was created successfully
             import os
-            main_pdf_success = main_pdf.exists() and main_pdf.stat().st_size > 5000
+            main_pdf_success = main_pdf.exists() and main_pdf.stat().st_size >= MIN_PDF_SIZE_BYTES
 
             if main_pdf_success and main_pdf.exists():
                 size = main_pdf.stat().st_size
@@ -186,7 +188,6 @@ class LinkProcessor:
             # If no links found, just use the main PDF
             if not links:
                 print("📄 No relevant links found, using main article PDF only")
-                import shutil
                 shutil.move(str(main_pdf), output_filename)
                 self.link_to_page_map = {article_url: 1}
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -197,7 +198,6 @@ class LinkProcessor:
 
             if not linked_sections:
                 print("📄 No accessible linked pages, using main article PDF only")
-                import shutil
                 shutil.move(str(main_pdf), output_filename)
                 self.link_to_page_map = {article_url: 1}
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -224,7 +224,6 @@ class LinkProcessor:
                                          for s in sections if 'start_page' in s}
             else:
                 print(f"❌ Merge failed, using main article only")
-                import shutil
                 shutil.copy(str(main_pdf), output_filename)
                 self.link_to_page_map = {article_url: 1}
                 success = True
@@ -235,10 +234,9 @@ class LinkProcessor:
             for pdf_file in pdf_pages:
                 try:
                     Path(pdf_file).unlink(missing_ok=True)
-                except:
+                except Exception:
                     pass
             try:
-                import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
             except Exception:
                 pass
@@ -258,6 +256,8 @@ class LinkProcessor:
             print("🔄 Falling back to clean single-page PDF conversion...")
             return await self.browser_manager.convert_url_to_pdf_with_page(article_url, output_filename, self._active_page)
         finally:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             # Clean up the dedicated page if we created it
             if self._owns_page and self._active_page:
                 await self.browser_manager.close_page(self._active_page)
@@ -281,7 +281,7 @@ class LinkProcessor:
                                       capture_output=True, timeout=5)
                 if result.returncode == 0:
                     return True
-            except:
+            except Exception:
                 pass
             
             return False
@@ -326,7 +326,7 @@ class LinkProcessor:
         relevant_links = []
         
         # Focus on links within article content areas
-        content_areas = soup.find_all(['article', 'main', '.content', '.post-content', '.entry-content'])
+        content_areas = soup.select('article, main, .content, .post-content, .entry-content')
         if not content_areas:
             # Fallback to body if no specific content areas found
             content_areas = [soup.find('body')] if soup.find('body') else [soup]
@@ -406,7 +406,7 @@ class LinkProcessor:
             
             # Check for surrounding text that indicates article content
             return context_text
-        except:
+        except Exception:
             return ""
     
     def is_likely_article_link(self, link_element, link_text, url):

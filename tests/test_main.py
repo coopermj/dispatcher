@@ -124,6 +124,7 @@ def mock_converter():
         converter.browser_manager = MagicMock()
         converter.browser_manager.create_new_page = AsyncMock(return_value=MagicMock())
         converter.browser_manager.close_page = AsyncMock()
+        converter.browser_manager.close_browser_session = AsyncMock()
         converter.browser_manager.convert_url_to_pdf_with_page = AsyncMock(return_value=False)
         converter.stats = {
             'total_emails': 0,
@@ -236,3 +237,280 @@ async def test_process_single_url_builds_correct_content_data(mock_converter):
     assert call_args[1].get('force_reprocess') is True or call_args[0][2] is True
     # effective_mode='website' must be passed
     assert call_args[1].get('effective_mode') == 'website' or call_args[0][3] == 'website'
+
+
+# ---------------------------------------------------------------------------
+# Review fix 1: --url mode must honor UPLOAD_TO_REMARKABLE and alert on failure
+# ---------------------------------------------------------------------------
+
+async def test_process_single_url_enables_upload_from_config(mock_converter):
+    """--url bypasses process_content(), so process_single_url must set
+    remarkable_enabled itself or the upload block is silently skipped."""
+    with patch('main.DEFAULT_UPLOAD_TO_REMARKABLE', True), \
+         patch.object(mock_converter, 'process_single_item_parallel', new_callable=AsyncMock) as mock_psi:
+        mock_psi.return_value = True
+        await mock_converter.process_single_url("https://thedispatch.com/article/x/")
+
+    assert mock_converter.stats['remarkable_enabled'] is True
+
+
+async def test_process_single_url_returns_item_result(mock_converter):
+    """The --url path needs the conversion result to set the exit code."""
+    with patch.object(mock_converter, 'process_single_item_parallel', new_callable=AsyncMock) as mock_psi:
+        mock_psi.return_value = False
+        result = await mock_converter.process_single_url("https://thedispatch.com/article/x/")
+
+    assert result is False
+
+
+async def test_url_mode_alerts_on_failures(monkeypatch):
+    """main() --url must flush the converter's failure records through alerting."""
+    import main
+
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            self.failures = [{"category": "conversion", "item": "x", "detail": "boom"}]
+        def print_startup_banner(self):
+            pass
+        async def initialize(self):
+            return True
+        async def process_single_url(self, url):
+            return False
+        def print_final_summary(self):
+            pass
+        async def cleanup(self):
+            pass
+
+    alert = MagicMock()
+    monkeypatch.setattr(main, 'DispatchConverter', FakeConverter)
+    monkeypatch.setattr(main, 'alert_on_failures', alert)
+    monkeypatch.setattr(sys, 'argv', ['main.py', '--url', 'https://thedispatch.com/article/x/', '--skip-email'])
+
+    await main.main()
+
+    alert.assert_called_once()
+    assert alert.call_args[0][0][0]["item"] == "x"
+
+
+# ---------------------------------------------------------------------------
+# Review fix 2: init failures, empty scans and crashes must not be silent
+# ---------------------------------------------------------------------------
+
+async def test_initialize_records_auth_failure(mock_converter):
+    """A failed Google login must leave an 'auth' failure record behind."""
+    mock_converter.processing_mode = 'email'
+    mock_converter.auth_manager = MagicMock()
+    mock_converter.auth_manager.authenticate_google.return_value = False
+
+    with patch('main.check_dependencies', return_value=True):
+        ok = await mock_converter.initialize()
+
+    assert ok is False
+    assert any(f["category"] == "auth" for f in mock_converter.failures)
+
+
+async def test_process_content_alerts_when_initialize_fails(mock_converter):
+    """process_content() returning False from a failed initialize() must still alert."""
+    with patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=False), \
+         patch('main.alert_on_failures') as alert:
+        result = await mock_converter.process_content()
+
+    assert result is False
+    alert.assert_called_once()
+
+
+async def test_process_content_alerts_when_scan_finds_nothing(mock_converter):
+    """Zero articles from a website scan usually means we're blocked — alert."""
+    with patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=True), \
+         patch.object(mock_converter, 'get_website_content', new_callable=AsyncMock, return_value=[]), \
+         patch('main.alert_on_failures') as alert:
+        result = await mock_converter.process_content()
+
+    assert result is False
+    alert.assert_called_once()
+    failures = alert.call_args[0][0]
+    assert failures and failures[0]["category"] == "scan"
+
+
+async def test_main_alerts_on_unhandled_exception(monkeypatch):
+    """A crash escaping process_content() must still produce an alert."""
+    import main
+
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            self.failures = []
+        def print_startup_banner(self):
+            pass
+        async def process_content(self, *a, **k):
+            raise RuntimeError("browser exploded")
+
+    alert = MagicMock()
+    monkeypatch.setattr(main, 'DispatchConverter', FakeConverter)
+    monkeypatch.setattr(main, 'alert_on_failures', alert)
+    monkeypatch.setattr(sys, 'argv', ['main.py', '--skip-email'])
+
+    await main.main()
+
+    alert.assert_called_once()
+    assert "browser exploded" in alert.call_args[0][0][0]["detail"]
+
+
+async def test_email_pipeline_wrapper_alerts_on_exception(monkeypatch):
+    """_run_email_pipeline swallows exceptions; it must alert rather than just print."""
+    import main
+
+    async def boom():
+        raise RuntimeError("gmail down")
+
+    alert = MagicMock()
+    monkeypatch.setattr(main, 'run_email_converter', boom)
+    monkeypatch.setattr(main, 'alert_on_failures', alert)
+
+    ok = await main._run_email_pipeline()
+
+    assert ok is False
+    alert.assert_called_once()
+    assert "gmail down" in alert.call_args[0][0][0]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Review fix 3: validate the PDF (via tracking) BEFORE uploading it
+# ---------------------------------------------------------------------------
+
+def _converted_item(mock_converter):
+    mock_converter.browser_manager.convert_url_to_pdf_with_page = AsyncMock(return_value=True)
+    mock_converter.stats['remarkable_enabled'] = True
+    mock_converter.remarkable_manager = MagicMock()
+    mock_converter.remarkable_manager.is_available.return_value = True
+    mock_converter.remarkable_manager.upload_if_new.return_value = True
+    return {
+        'subject': 'Test Article',
+        'read_online_url': 'https://thedispatch.com/article/test/',
+        'message_id': 'test_123',
+        'sender': 'test',
+        'date': datetime.now().isoformat(),
+    }
+
+
+async def test_rejected_pdf_is_not_uploaded_and_counts_as_failure(mock_converter):
+    """mark_email_processed() rejecting the PDF (too small/missing) must block the
+    upload and be reported as a failed conversion, not a success."""
+    content_data = _converted_item(mock_converter)
+    mock_converter.tracking_manager.mark_email_processed.return_value = False
+
+    with patch('main.FOLLOW_ARTICLE_LINKS', False):
+        result = await mock_converter.process_single_item_parallel(content_data, 1, force_reprocess=True)
+
+    assert result is False
+    mock_converter.remarkable_manager.upload_if_new.assert_not_called()
+    assert mock_converter.stats['failed_conversions'] == 1
+    assert mock_converter.stats['successful_conversions'] == 0
+    assert any(f["category"] == "conversion" for f in mock_converter.failures)
+
+
+async def test_valid_pdf_upload_updates_tracking_status(mock_converter):
+    """When the PDF validates and uploads, tracking must end up remarkable_uploaded=True."""
+    content_data = _converted_item(mock_converter)
+    mock_converter.tracking_manager.mark_email_processed.return_value = True
+
+    with patch('main.FOLLOW_ARTICLE_LINKS', False):
+        result = await mock_converter.process_single_item_parallel(content_data, 1, force_reprocess=True)
+
+    assert result is True
+    mock_converter.remarkable_manager.upload_if_new.assert_called_once()
+    mock_converter.tracking_manager.update_remarkable_status.assert_called_once_with(content_data, True)
+    assert mock_converter.stats['remarkable_uploads'] == 1
+
+
+# ---------------------------------------------------------------------------
+# Review fix 4: exit code must reflect the run outcome
+# ---------------------------------------------------------------------------
+
+def _fake_converter_returning(value):
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            self.failures = []
+        def print_startup_banner(self):
+            pass
+        async def process_content(self, *a, **k):
+            return value
+    return FakeConverter
+
+
+async def test_main_returns_zero_on_success(monkeypatch):
+    import main
+    monkeypatch.setattr(main, 'DispatchConverter', _fake_converter_returning(True))
+    monkeypatch.setattr(sys, 'argv', ['main.py', '--skip-email'])
+    assert await main.main() == 0
+
+
+async def test_main_returns_nonzero_when_processing_fails(monkeypatch):
+    import main
+    monkeypatch.setattr(main, 'DispatchConverter', _fake_converter_returning(False))
+    monkeypatch.setattr(sys, 'argv', ['main.py', '--skip-email'])
+    # 2 = "failed, already alerted" so run_pipeline.sh doesn't send a second email
+    assert await main.main() == main.EXIT_FAILURE_ALERTED == 2
+
+
+async def test_main_returns_nonzero_on_unhandled_exception(monkeypatch):
+    import main
+
+    class FakeConverter:
+        def __init__(self, *a, **k):
+            self.failures = []
+        def print_startup_banner(self):
+            pass
+        async def process_content(self, *a, **k):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(main, 'DispatchConverter', FakeConverter)
+    monkeypatch.setattr(main, 'alert_on_failures', MagicMock())
+    monkeypatch.setattr(sys, 'argv', ['main.py', '--skip-email'])
+    # main() alerted on the crash itself, so it reports the "already alerted" code
+    assert await main.main() == main.EXIT_FAILURE_ALERTED
+
+
+# ---------------------------------------------------------------------------
+# Module review: blocking rmapi calls must not stall the event loop
+# ---------------------------------------------------------------------------
+
+async def test_upload_runs_off_the_event_loop_thread(mock_converter):
+    """upload_if_new is a blocking subprocess; it must run via asyncio.to_thread
+    so the other concurrent conversions keep making progress."""
+    import threading
+    content_data = _converted_item(mock_converter)
+    mock_converter.tracking_manager.mark_email_processed.return_value = True
+    seen = {}
+
+    def upload(*a, **k):
+        seen['thread'] = threading.current_thread()
+        return True
+    mock_converter.remarkable_manager.upload_if_new.side_effect = upload
+
+    with patch('main.FOLLOW_ARTICLE_LINKS', False):
+        await mock_converter.process_single_item_parallel(content_data, 1, force_reprocess=True)
+
+    assert seen['thread'] is not threading.main_thread()
+
+
+async def test_inventory_refresh_runs_off_the_event_loop_thread(mock_converter):
+    import threading
+    seen = {}
+
+    def refresh(*a, **k):
+        seen['thread'] = threading.current_thread()
+    mock_converter.remarkable_manager = MagicMock()
+    mock_converter.remarkable_manager.is_available.return_value = True
+    mock_converter.remarkable_manager.refresh_inventory.side_effect = refresh
+    item = {'subject': 'S', 'read_online_url': 'https://thedispatch.com/article/s/',
+            'message_id': 'm', 'sender': 'x', 'date': 'd'}
+    mock_converter.tracking_manager.is_email_processed.return_value = False
+
+    with patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=True), \
+         patch.object(mock_converter, 'get_website_content', new_callable=AsyncMock, return_value=[item]), \
+         patch.object(mock_converter, 'process_items_parallel', new_callable=AsyncMock), \
+         patch('main.PRUNE_NEWS_ENABLED', False), \
+         patch('main.alert_on_failures'):
+        await mock_converter.process_content(upload_to_remarkable=True)
+
+    assert seen['thread'] is not threading.main_thread()

@@ -23,7 +23,7 @@ async def refresh_dispatch(auth_manager):
         return False
     try:
         return await auth_manager.authenticate_with_dispatch(
-            bm.get_page(), bm.get_context())
+            bm.get_page(), bm.get_context(), interactive=True)
     finally:
         await bm.close_browser_session()
 

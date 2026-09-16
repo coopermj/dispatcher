@@ -124,6 +124,39 @@ def run_local_prune(days, pdf_dirs=None):
     return deleted
 
 
+def run_debug_prune(days, debug_dir=None):
+    """Delete debug_html/ page snapshots and temp_pdfs/ leftovers older than
+    `days` (mtime). Two snapshots are written per conversion and were never
+    pruned — 4 GB / 8,500 files had accumulated. Returns count removed; never raises."""
+    import shutil
+    import time
+    from config.settings import DEBUG_DIR
+    debug_dir = Path(debug_dir) if debug_dir is not None else Path(DEBUG_DIR)
+    if not debug_dir.is_dir():
+        return 0
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for p in debug_dir.glob("page_*.html"):
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                removed += 1
+        except OSError as e:
+            print(f"   ⚠️ could not delete {p.name}: {e}")
+    temp_root = debug_dir / "temp_pdfs"
+    if temp_root.is_dir():
+        for d in temp_root.iterdir():
+            try:
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+            except OSError as e:
+                print(f"   ⚠️ could not delete {d.name}: {e}")
+    if removed:
+        print(f"🧹 Removed {removed} old debug snapshot(s)/temp dir(s) from {debug_dir}")
+    return removed
+
+
 def is_pipeline_doc(entry):
     """True for docs this pipeline generated (dispatch_* names). Manually
     added files (WSJ papers, saved articles) are never auto-pruned."""

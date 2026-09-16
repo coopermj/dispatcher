@@ -79,12 +79,15 @@ class DispatchPersistentConverter:
             # Step 1: Google auth (Gmail + user info for The Dispatch)
             if not self.auth_manager.authenticate_google():
                 print("❌ Google authentication failed")
-                return
+                record_failure(self.failures, "auth", "Google Gmail", "authentication failed")
+                return  # end-of-run alert in `finally` reports it
 
             # Step 2: Browser session
             if not await self.browser_manager.start_browser_session():
                 print("❌ Browser session failed to start")
-                return
+                record_failure(self.failures, "conversion", "initialization",
+                               "browser session failed to start")
+                return  # end-of-run alert in `finally` reports it
 
             page = self.browser_manager.get_page()
             context = self.browser_manager.get_context()
@@ -92,8 +95,10 @@ class DispatchPersistentConverter:
             # Step 3: The Dispatch login (cookies or manual)
             if not await self.auth_manager.authenticate_with_dispatch(page, context):
                 print("❌ The Dispatch authentication failed")
+                record_failure(self.failures, "auth", "The Dispatch",
+                               "login failed (cookies expired?)")
                 await self.browser_manager.close_browser_session()
-                return
+                return  # end-of-run alert in `finally` reports it
 
             # Step 4: Output directory (absolute, so tracking paths are portable)
             output_path = Path(output_dir).resolve()

@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import sys
 import time
 import traceback
 from datetime import datetime
@@ -32,17 +33,30 @@ from config.settings import (
 )
 from email_converter import run_email_converter
 
+# Exit status for "the run failed, but main.py already sent its failure report".
+# run_pipeline.sh skips its own crash alert on this code so a handled failure
+# doesn't produce two emails; any other nonzero exit is an unreported hard crash.
+EXIT_FAILURE_ALERTED = 2
+
 
 async def _run_email_pipeline():
-    """Run the Gmail → PDF → reMarkable pipeline, logging failures without aborting."""
+    """Run the Gmail → PDF → reMarkable pipeline without aborting the run.
+
+    Returns True on a clean run. Per-item failures alert inside the converter;
+    this wrapper alerts on a crash that escapes it, so it can't fail silently."""
     print("\n" + "=" * 65)
     print("📧 Starting email converter...")
     print("=" * 65)
     try:
         await run_email_converter()
+        return True
     except Exception as e:
         print(f"⚠️ Email converter failed: {e}")
         print(f"🔧 DEBUG: {traceback.format_exc()}")
+        failures = []
+        record_failure(failures, "conversion", "email pipeline crashed", str(e))
+        alert_on_failures(failures, run_label="email pipeline")
+        return False
 
 
 class DispatchConverter:
@@ -142,34 +156,44 @@ class DispatchConverter:
         """Initialize all components"""
         print("\n🔧 Initializing components...")
         
+        # Every failure here is recorded so the caller can alert on it — an
+        # expired login on the headless box must not look like a clean run.
         # Check dependencies
         if not check_dependencies():
             print("❌ Please install missing dependencies before continuing")
+            record_failure(self.failures, "conversion", "initialization",
+                           "missing dependencies")
             return False
-        
+
         # Show tracking summary
         self.tracking_manager.print_tracking_summary()
-        
+
         # Clean up tracking data
         self.tracking_manager.cleanup_tracking_data(self.output_dir)
-        
+
         # For email mode, authenticate with Google
         if self.processing_mode == 'email':
             if not self.auth_manager.authenticate_google():
                 print("❌ Google authentication failed")
+                record_failure(self.failures, "auth", "Google Gmail",
+                               "authentication failed")
                 return False
-        
+
         # Start browser session
         if not await self.browser_manager.start_browser_session():
             print("❌ Browser session failed to start")
+            record_failure(self.failures, "conversion", "initialization",
+                           "browser session failed to start")
             return False
-        
+
         # Authenticate with The Dispatch (required for both modes)
         page = self.browser_manager.get_page()
         context = self.browser_manager.get_context()
-        
+
         if not await self.auth_manager.authenticate_with_dispatch(page, context):
             print("❌ The Dispatch authentication failed")
+            record_failure(self.failures, "auth", "The Dispatch",
+                           "login failed (cookies expired?)")
             await self.browser_manager.close_browser_session()
             return False
         
@@ -195,16 +219,26 @@ class DispatchConverter:
         try:
             # Initialize all components
             if not await self.initialize():
+                if not self.failures:
+                    record_failure(self.failures, "conversion", "initialization", "failed")
+                alert_on_failures(self.failures,
+                                  run_label=f"{self.processing_mode} pipeline")
                 return False
-            
+
             # Get content to process based on mode
             if self.processing_mode == 'email':
                 content_list = await self.get_email_content(max_items)
             else:
                 content_list = await self.get_website_content(max_items)
-            
+
             if not content_list:
+                # Zero results almost always means we're blocked or logged out,
+                # not that The Dispatch published nothing — alert, don't shrug.
                 print(f"❌ No {self.processing_mode} content found")
+                record_failure(self.failures, "scan", f"{self.processing_mode} scan",
+                               "no content found")
+                alert_on_failures(self.failures,
+                                  run_label=f"{self.processing_mode} pipeline")
                 return False
             
             # Filter content if not force reprocessing
@@ -228,7 +262,7 @@ class DispatchConverter:
             # Fetch the live reMarkable inventory once up front so per-item dedup checks
             # hit the cache instead of racing to refresh it across concurrent conversions.
             if upload_to_remarkable and self.remarkable_manager.is_available():
-                self.remarkable_manager.refresh_inventory()
+                await asyncio.to_thread(self.remarkable_manager.refresh_inventory)
 
             # Process items in parallel with concurrency limit
             await self.process_items_parallel(content_list)
@@ -245,7 +279,7 @@ class DispatchConverter:
                 try:
                     from prune_news import run_prune
                     print(f"\n🧹 Pruning unstarred dispatch docs older than {PRUNE_NEWS_DAYS} days...")
-                    prune_result = run_prune(confirm=True, dispatch_only=True)
+                    prune_result = await asyncio.to_thread(run_prune, confirm=True, dispatch_only=True)
                     if prune_result is None:
                         record_failure(self.failures, "rmapi", "prune step",
                                        "could not query the reMarkable device")
@@ -260,10 +294,19 @@ class DispatchConverter:
                 # Local disk hygiene: drop PDFs whose device fate is settled
                 try:
                     from prune_news import run_local_prune
-                    run_local_prune(days=PRUNE_NEWS_DAYS)
+                    await asyncio.to_thread(run_local_prune, days=PRUNE_NEWS_DAYS)
                 except Exception as e:
                     print(f"⚠️ Local PDF cleanup failed (run continues): {e}")
                     record_failure(self.failures, "prune", "local PDF cleanup", str(e))
+
+            # Debug snapshots/temp dirs are written on every conversion regardless
+            # of upload settings; keep debug_html/ bounded.
+            if PRUNE_NEWS_ENABLED:
+                try:
+                    from prune_news import run_debug_prune
+                    await asyncio.to_thread(run_debug_prune, PRUNE_NEWS_DAYS)
+                except Exception as e:
+                    print(f"⚠️ Debug snapshot cleanup failed (run continues): {e}")
 
             alert_on_failures(self.failures,
                               run_label=f"{self.processing_mode} pipeline")
@@ -412,10 +455,30 @@ class DispatchConverter:
                 self.stats['total_file_size'] += file_info['size']
                 print(f"📄 [{index}] PDF size: {file_info['size_formatted']}")
 
+            # Validate + record in tracking BEFORE uploading. mark_email_processed
+            # rejects missing/undersized PDFs (paywall stubs); a rejected PDF must
+            # never reach the device, where inventory dedup would then block the
+            # real article for good.
+            if not self.tracking_manager.mark_email_processed(
+                content_data,
+                str(pdf_filename),
+                remarkable_uploaded=False,
+                success=True
+            ):
+                print(f"❌ [{index}] PDF failed validation, not uploading")
+                self.stats['failed_conversions'] += 1
+                record_failure(self.failures, "conversion",
+                               content_data.get('subject', f'item #{index}'),
+                               "PDF failed validation (missing or too small)")
+                return False
+
             # Upload to ReMarkable if enabled
             remarkable_uploaded = False
             if self.stats['remarkable_enabled'] and self.remarkable_manager.is_available():
-                upload_success = self.remarkable_manager.upload_if_new(pdf_filename, content_data['subject'])
+                # rmapi is a blocking subprocess (minutes for big PDFs): keep it off the
+                # event loop so the other concurrent conversions keep moving.
+                upload_success = await asyncio.to_thread(
+                    self.remarkable_manager.upload_if_new, pdf_filename, content_data['subject'])
                 if upload_success:
                     self.stats['remarkable_uploads'] += 1
                     remarkable_uploaded = True
@@ -425,15 +488,9 @@ class DispatchConverter:
                     record_failure(self.failures, "upload", pdf_filename.name,
                                    "upload_if_new failed after retries (see log)")
 
-            # Mark as processed in tracking
-            tracking_success = self.tracking_manager.mark_email_processed(
-                content_data,
-                str(pdf_filename),
-                remarkable_uploaded,
-                success=True
-            )
-
-            if tracking_success:
+            if remarkable_uploaded:
+                self.tracking_manager.update_remarkable_status(content_data, True)  # saves
+            else:
                 self.tracking_manager.save_tracking_data()
 
             print(f"✅ [{index}] Successfully processed: {pdf_filename.name}")
@@ -511,9 +568,13 @@ class DispatchConverter:
             'source': 'cli',
         }
 
+        # This path bypasses process_content(), so honor the upload config here
+        # or the per-item upload block is silently skipped.
+        self.stats['remarkable_enabled'] = DEFAULT_UPLOAD_TO_REMARKABLE
+
         print(f"\n🔗 Processing URL: {url}")
         print(f"📄 Derived title: {subject}")
-        await self.process_single_item_parallel(
+        return await self.process_single_item_parallel(
             content_data, 1,
             force_reprocess=True,
             effective_mode='website'
@@ -597,6 +658,10 @@ async def main():
                         help='Re-upload PDFs that were converted but never uploaded to reMarkable')
     args = parser.parse_args()
 
+    # Exit status: 0 only when every stage completed cleanly. run_pipeline.sh
+    # relies on a nonzero exit to send its crash alert.
+    ok = True
+    converter = None
     try:
         # Create converter instance
         converter = DispatchConverter()
@@ -604,7 +669,7 @@ async def main():
         # --retry-uploads mode: upload PDFs that failed to reach reMarkable
         if args.retry_uploads:
             converter.retry_failed_uploads()
-            return
+            return 0
 
         # Print startup banner
         converter.print_startup_banner()
@@ -612,15 +677,17 @@ async def main():
         # --url mode: process a single URL directly
         if args.url:
             if not await converter.initialize():
-                return
+                alert_on_failures(converter.failures, run_label="url pipeline")
+                return EXIT_FAILURE_ALERTED
             try:
-                await converter.process_single_url(args.url)
+                ok = await converter.process_single_url(args.url)
                 converter.print_final_summary()
             finally:
                 await converter.cleanup()
+            alert_on_failures(converter.failures, run_label="url pipeline")
             # Preserve prior behavior: the email converter still runs after a --url job.
             if not args.skip_email:
-                await _run_email_pipeline()
+                ok = await _run_email_pipeline() and ok
         # Normal mode: scan and process (email or website based on PROCESSING_MODE in .env)
         else:
             # Run the EMAIL pipeline FIRST. It renders newsletters cleanly from the
@@ -629,17 +696,24 @@ async def main():
             # dedup then skips. If the email pipeline fails, the website pipeline
             # still runs below as a fallback.
             if not args.skip_email:
-                await _run_email_pipeline()
+                ok = await _run_email_pipeline()
 
             # Defer to config (.env): process_content falls back to
             # DEFAULT_FORCE_REPROCESS / DEFAULT_UPLOAD_TO_REMARKABLE when args are None.
-            await converter.process_content()
+            ok = await converter.process_content() and ok
 
     except KeyboardInterrupt:
         print("\n👋 Process interrupted by user")
+        return 130
     except Exception as e:
         print(f"❌ CRITICAL ERROR: {e}")
         print(f"🔧 DEBUG: {traceback.format_exc()}")
+        failures = converter.failures if converter is not None else []
+        record_failure(failures, "conversion", "run crashed", str(e))
+        alert_on_failures(failures, run_label="main")
+        return EXIT_FAILURE_ALERTED
+
+    return 0 if ok else EXIT_FAILURE_ALERTED
 
 
 if __name__ == "__main__":
@@ -671,8 +745,10 @@ if __name__ == "__main__":
     # input()
 
     try:
-        asyncio.run(main())
+        sys.exit(asyncio.run(main()))
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
+        sys.exit(130)
     except Exception as e:
         print(f"❌ CRITICAL ERROR: {e}")
+        sys.exit(1)
