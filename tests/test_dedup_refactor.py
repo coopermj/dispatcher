@@ -159,7 +159,8 @@ async def test_email_pipeline_uses_upload_if_new_and_tracks(tmp_path):
          patch('email_converter.EmailHandler') as E, \
          patch('email_converter.BrowserManager') as B, \
          patch('email_converter.TrackingManager') as T, \
-         patch('email_converter.ReMarkableManager') as R:
+         patch('email_converter.ReMarkableManager') as R, \
+         patch('email_converter.check_atlantic_session', new_callable=AsyncMock):
 
         A.return_value.authenticate_google.return_value = True
         A.return_value.authenticate_with_dispatch = AsyncMock(return_value=True)
