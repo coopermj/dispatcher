@@ -54,6 +54,9 @@ DEBUG_DIR = Path(os.getenv('DEBUG_DIR', 'debug_html'))
 CREDENTIALS_FILE = Path(os.getenv('CREDENTIALS_FILE', 'credentials.json'))
 TOKEN_FILE = Path(os.getenv('TOKEN_FILE', 'token.pickle'))
 COOKIES_FILE = Path(os.getenv('COOKIES_FILE', 'dispatch_cookies.json'))
+# Second cookie jar: The Atlantic subscription, so linked theatlantic.com pages
+# render unpaywalled when link following is on. Optional.
+ATLANTIC_COOKIES_FILE = Path(os.getenv('ATLANTIC_COOKIES_FILE', 'atlantic_cookies.json'))
 TRACKING_FILE = Path(os.getenv('TRACKING_FILE', 'dispatch_tracking.json'))
 DISPATCH_EMAIL_TRACKING_FILE = Path(os.getenv('EMAIL_TRACKING_FILE', 'dispatch_email_tracking.json'))
 
@@ -64,6 +67,8 @@ if not TOKEN_FILE.is_absolute():
     TOKEN_FILE = BASE_DIR / TOKEN_FILE
 if not COOKIES_FILE.is_absolute():
     COOKIES_FILE = BASE_DIR / COOKIES_FILE
+if not ATLANTIC_COOKIES_FILE.is_absolute():
+    ATLANTIC_COOKIES_FILE = BASE_DIR / ATLANTIC_COOKIES_FILE
 if not TRACKING_FILE.is_absolute():
     TRACKING_FILE = BASE_DIR / TRACKING_FILE
 if not DISPATCH_EMAIL_TRACKING_FILE.is_absolute():
@@ -170,6 +175,8 @@ PRUNE_NEWS_DAYS = get_int_env('PRUNE_NEWS_DAYS', 10)
 
 # The Dispatch website settings
 DISPATCH_BASE_URL = os.getenv('DISPATCH_BASE_URL', "https://thedispatch.com")
+ATLANTIC_BASE_URL = "https://www.theatlantic.com"
+ATLANTIC_LOGIN_URL = "https://accounts.theatlantic.com/login/"
 # Only unambiguous sign-in prompts. 'subscribe' and 'get started' appear even
 # when logged in on The Dispatch, so including them would cause false "logged out"
 # detections (matching the logic already used in email_converter.py).

@@ -25,6 +25,7 @@ from modules import (
 )
 from modules.utils import create_safe_pdf_filename
 from modules.alerts import record_failure, alert_on_failures
+from modules.auth import check_atlantic_session
 from config.settings import (
     DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE,
     DEFAULT_FORCE_REPROCESS, DISPATCH_EMAIL_TRACKING_FILE, TRACKING_FILE,
@@ -99,6 +100,10 @@ class DispatchPersistentConverter:
                                "login failed (cookies expired?)")
                 await self.browser_manager.close_browser_session()
                 return  # end-of-run alert in `finally` reports it
+
+            # Step 3b: optional Atlantic session for linked pages (non-fatal)
+            if FOLLOW_ARTICLE_LINKS:
+                await check_atlantic_session(self.auth_manager, page, context, self.failures)
 
             # Step 4: Output directory (absolute, so tracking paths are portable)
             output_path = Path(output_dir).resolve()

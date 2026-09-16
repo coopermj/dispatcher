@@ -99,3 +99,29 @@ def test_short_anchor_citations_are_followed():
     urls = " ".join(l["url"] for l in links)
     assert "short-anchor-cited-piece" in urls   # one-word citation: kept
     assert "symbol-only-target" not in urls      # symbol-only anchor: dropped
+
+
+# ---------------------------------------------------------------------------
+# '/archive/' must mean an archive INDEX page, not any URL containing the word.
+# The Atlantic puts every article under /<section>/archive/YYYY/MM/<slug>/<id>/,
+# so the old substring rule silently rejected all Atlantic links (found while
+# adding the Atlantic login — the feature was a no-op without this).
+# ---------------------------------------------------------------------------
+
+def test_atlantic_archive_article_urls_are_followed():
+    from unittest.mock import MagicMock
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(MagicMock())
+    assert lp.should_follow_link(
+        "https://www.theatlantic.com/politics/archive/2025/06/trump-interview-iran-israel/683192/") is True
+    assert lp.should_follow_link(
+        "https://www.theatlantic.com/ideas/archive/2022/11/veterans-day-us-military-iraq/672081/") is True
+
+
+def test_archive_index_pages_are_still_rejected():
+    from unittest.mock import MagicMock
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(MagicMock())
+    assert lp.should_follow_link("https://www.theatlantic.com/archive/") is False
+    assert lp.should_follow_link("https://example.com/archive") is False
+    assert lp.should_follow_link("https://example.com/blog/archive/") is False

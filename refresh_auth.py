@@ -6,6 +6,9 @@
 2. Dispatch cookies (dispatch_cookies.json): tests the saved cookies; if
    they're dead, opens a headed browser for the magic-link login and saves
    fresh ones (the existing AuthManager flow).
+3. Atlantic cookies (atlantic_cookies.json): same idea for The Atlantic, so
+   linked theatlantic.com pages render unpaywalled. Optional — a skipped or
+   failed Atlantic login is reported but does not fail this script.
 
 refresh_tokens_mac.sh runs this and then copies everything to the box.
 """
@@ -22,8 +25,13 @@ async def refresh_dispatch(auth_manager):
         print("❌ Browser failed to start")
         return False
     try:
-        return await auth_manager.authenticate_with_dispatch(
+        ok = await auth_manager.authenticate_with_dispatch(
             bm.get_page(), bm.get_context(), interactive=True)
+        print("— Atlantic cookies —")
+        if not await auth_manager.authenticate_with_atlantic(
+                bm.get_page(), bm.get_context(), interactive=True):
+            print("⚠️ Atlantic login not completed — linked Atlantic pages will render truncated")
+        return ok
     finally:
         await bm.close_browser_session()
 

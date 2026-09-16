@@ -6,7 +6,9 @@ Authentication manager for Google OAuth and The Dispatch
 import os
 import pickle
 import json
+import re
 import sys
+import time
 import asyncio
 from pathlib import Path
 
@@ -17,8 +19,10 @@ from googleapiclient.discovery import build
 
 from config.settings import (
     GOOGLE_SCOPES, CREDENTIALS_FILE, TOKEN_FILE, COOKIES_FILE,
-    DISPATCH_BASE_URL, BROWSER_HEADLESS
+    DISPATCH_BASE_URL, BROWSER_HEADLESS,
+    ATLANTIC_COOKIES_FILE, ATLANTIC_BASE_URL, ATLANTIC_LOGIN_URL
 )
+from modules.alerts import record_failure
 
 # Reads the page's own login state. The Dispatch gates its account UI with
 # Alpine `x-show="$store.user.loaded && $store.user.valid"`; the markup itself
@@ -55,6 +59,47 @@ async def is_logged_in(page):
     if not isinstance(state, dict):
         return False
     return bool(state.get('loaded')) and bool(state.get('valid'))
+
+
+# The Atlantic renders login state server-side (probe 2026-09-16): every page
+# embeds "isLoggedIn": true|false, and the nav shows My Account
+# (accounts.theatlantic.com/accounts/details/) when signed in vs Sign In
+# (accounts.theatlantic.com/login/) when not. So, unlike The Dispatch, a static
+# HTML check is trustworthy here.
+_ATLANTIC_FLAG_RE = re.compile(r'"isLoggedIn"\s*:\s*(true|false)')
+ATLANTIC_ACCOUNT_LINK = 'accounts.theatlantic.com/accounts/details/'
+
+
+def atlantic_looks_logged_in(html):
+    """True if the page says we're a signed-in Atlantic member. An explicit
+    isLoggedIn:false wins over everything; with no flag, the My Account link counts."""
+    if not html:
+        return False
+    flags = set(_ATLANTIC_FLAG_RE.findall(html))
+    if 'false' in flags:
+        return False
+    if 'true' in flags:
+        return True
+    return ATLANTIC_ACCOUNT_LINK in html
+
+
+async def check_atlantic_session(auth_manager, page, browser_context, failures):
+    """Once-per-run, NON-fatal Atlantic session check for pipelines that follow links.
+
+    No jar → the feature was never set up: print a hint, record nothing (no
+    nightly noise). Jar present but dead → record an 'auth' failure so the
+    end-of-run alert points at refresh_tokens_mac.sh, but let the run continue:
+    linked pages are secondary content; only Dispatch auth aborts a run.
+    """
+    if not Path(ATLANTIC_COOKIES_FILE).exists():
+        print("ℹ️ No Atlantic cookie jar — linked theatlantic.com pages will render as a "
+              "non-subscriber (run ./refresh_tokens_mac.sh to add one)")
+        return False
+    if await auth_manager.authenticate_with_atlantic(page, browser_context, interactive=False):
+        return True
+    record_failure(failures, "auth", "The Atlantic",
+                   "session expired — linked Atlantic pages will render truncated")
+    return False
 
 
 class AuthManager:
@@ -116,59 +161,124 @@ class AuthManager:
         print("✅ Google authentication complete")
         return True
 
-    async def save_dispatch_cookies(self, browser_context):
-        """Save The Dispatch browser cookies to file"""
+    # ---- cookie jars (one per site; loaded into the shared browser context) ----
+
+    async def _save_cookies(self, browser_context, domain, path, label):
+        """Persist the context's cookies for `domain` to `path`."""
         try:
             if not browser_context:
-                print("⚠️ No browser context available for saving cookies")
+                print(f"⚠️ No browser context available for saving {label} cookies")
                 return False
-
-            cookies = await browser_context.cookies()
-
-            # Filter for The Dispatch cookies
-            dispatch_cookies = [
-                cookie for cookie in cookies
-                if 'thedispatch.com' in cookie.get('domain', '')
-            ]
-
-            if dispatch_cookies:
-                with open(COOKIES_FILE, 'w') as f:
-                    json.dump(dispatch_cookies, f, indent=2)
-                print(f"✅ Saved {len(dispatch_cookies)} cookies to {COOKIES_FILE}")
-                return True
-            else:
-                print("⚠️ No Dispatch cookies found to save")
+            cookies = [c for c in await browser_context.cookies()
+                       if domain in c.get('domain', '')]
+            if not cookies:
+                print(f"⚠️ No {label} cookies found to save")
                 return False
-
+            with open(path, 'w') as f:
+                json.dump(cookies, f, indent=2)
+            print(f"✅ Saved {len(cookies)} {label} cookies to {path}")
+            return True
         except Exception as e:
-            print(f"❌ Error saving cookies: {e}")
+            print(f"❌ Error saving {label} cookies: {e}")
             return False
+
+    async def _load_cookies(self, browser_context, path, label):
+        """Add the saved cookies at `path` to the context, dropping any already
+        expired (e.g. Cloudflare's ~30-minute __cf_bm) so add_cookies never chokes."""
+        try:
+            if not Path(path).exists():
+                print(f"📝 No saved {label} cookies found at {path}")
+                return False
+            if not browser_context:
+                print(f"⚠️ No browser context available for loading {label} cookies")
+                return False
+            with open(path, 'r') as f:
+                cookies = json.load(f)
+            now = time.time()
+            live = [c for c in cookies
+                    if not c.get('expires') or c['expires'] < 0 or c['expires'] > now]
+            if not live:
+                print(f"⚠️ All saved {label} cookies have expired")
+                return False
+            await browser_context.add_cookies(live)
+            print(f"✅ Loaded {len(live)} {label} cookies from {path}")
+            return True
+        except Exception as e:
+            print(f"❌ Error loading {label} cookies: {e}")
+            return False
+
+    async def save_dispatch_cookies(self, browser_context):
+        """Save The Dispatch browser cookies to file"""
+        return await self._save_cookies(browser_context, 'thedispatch.com', COOKIES_FILE, 'Dispatch')
 
     async def load_dispatch_cookies(self, browser_context):
         """Load The Dispatch browser cookies from file"""
+        return await self._load_cookies(browser_context, COOKIES_FILE, 'Dispatch')
+
+    async def save_atlantic_cookies(self, browser_context):
+        return await self._save_cookies(browser_context, 'theatlantic.com', ATLANTIC_COOKIES_FILE, 'Atlantic')
+
+    async def load_atlantic_cookies(self, browser_context):
+        return await self._load_cookies(browser_context, ATLANTIC_COOKIES_FILE, 'Atlantic')
+
+    # ---- The Atlantic ----
+
+    async def test_atlantic_authentication(self, page):
+        """Load the Atlantic homepage and read its server-rendered login state."""
         try:
-            if not COOKIES_FILE.exists():
-                print(f"📝 No saved cookies found at {COOKIES_FILE}")
-                return False
-
-            if not browser_context:
-                print("⚠️ No browser context available for loading cookies")
-                return False
-
-            with open(COOKIES_FILE, 'r') as f:
-                cookies = json.load(f)
-
-            if cookies:
-                await browser_context.add_cookies(cookies)
-                print(f"✅ Loaded {len(cookies)} cookies from {COOKIES_FILE}")
+            print("🔍 Testing The Atlantic session...")
+            await page.goto(ATLANTIC_BASE_URL, timeout=30000)
+            await asyncio.sleep(3)
+            if atlantic_looks_logged_in(await page.content()):
+                print("✅ The Atlantic: signed in with saved cookies")
                 return True
-            else:
-                print("⚠️ No cookies found in file")
+            print("❌ The Atlantic: not signed in (page shows Sign In / isLoggedIn=false)")
+            return False
+        except Exception as e:
+            print(f"⚠️ Error testing The Atlantic session: {e}")
+            return False
+
+    async def authenticate_with_atlantic(self, page, browser_context, interactive=None):
+        """Sign in to The Atlantic via saved cookies, or interactively on a Mac.
+
+        Mirrors authenticate_with_dispatch: fails closed, never overwrites the
+        jar on failure. Interactive login goes through the site's own form
+        (which may show a CAPTCHA — the human solves it); we only keep cookies.
+        """
+        if interactive is None:
+            interactive = sys.stdin.isatty() and not BROWSER_HEADLESS
+        try:
+            if await self.load_atlantic_cookies(browser_context):
+                if await self.test_atlantic_authentication(page):
+                    return True
+                print("🔄 Saved Atlantic cookies expired or invalid")
+
+            if not interactive:
+                print("❌ Not signed in to The Atlantic and no interactive session to sign in with")
                 return False
 
-        except Exception as e:
-            print(f"❌ Error loading cookies: {e}")
+            print("🔑 The Atlantic: sign in in the browser window (up to 5 minutes)...")
+            await page.goto(ATLANTIC_LOGIN_URL, timeout=30000)
+            max_wait_seconds, check_interval, elapsed = 300, 3, 0
+            while elapsed < max_wait_seconds:
+                await asyncio.sleep(check_interval)
+                elapsed += check_interval
+                try:
+                    if atlantic_looks_logged_in(await page.content()):
+                        print("✅ The Atlantic login detected!")
+                        await self.save_atlantic_cookies(browser_context)
+                        return True
+                except Exception:
+                    pass  # mid-navigation; try again next tick
+                if elapsed % 30 == 0:
+                    print(f"⏳ Still waiting for The Atlantic login... ({elapsed}s)")
+            print("⏰ Timed out waiting for The Atlantic login — nothing saved")
             return False
+        except Exception as e:
+            print(f"❌ The Atlantic authentication error: {e}")
+            return False
+
+    # ---- The Dispatch ----
 
     async def test_dispatch_authentication(self, page):
         """Test if we're already authenticated with The Dispatch"""

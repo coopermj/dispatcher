@@ -540,10 +540,16 @@ class LinkProcessor:
                 print(f"    ❌ Fragment-only link")
                 return False
             
-            # Skip obvious navigation/site structure pages
+            # Skip obvious navigation/site structure pages. NOTE: '/archive/' is
+            # deliberately NOT a substring rule — The Atlantic files every article
+            # under /<section>/archive/YYYY/MM/<slug>/<id>/, so that rule silently
+            # rejected all Atlantic links. Only a bare archive INDEX is skipped below.
+            if parsed.path.rstrip('/').endswith('/archive'):
+                print(f"    ❌ Archive index page")
+                return False
             navigation_patterns = [
                 '/about', '/contact', '/privacy', '/terms', '/help', '/support',
-                '/sitemap', '/search?', '/category/', '/tag/', '/archive/', '/author/',
+                '/sitemap', '/search?', '/category/', '/tag/', '/author/',
                 '/contributors', '/staff', '/team', '/careers', '/jobs', '/press',
                 '/masthead', '/ethics', '/corrections', '/newsletters', '/podcasts'
             ]

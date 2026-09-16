@@ -25,6 +25,7 @@ from modules.utils import (
     format_file_size, get_file_info
 )
 from modules.alerts import record_failure, alert_on_failures
+from modules.auth import check_atlantic_session
 from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
@@ -197,6 +198,10 @@ class DispatchConverter:
             await self.browser_manager.close_browser_session()
             return False
         
+        # Optional second subscription for link following; never aborts the run.
+        if FOLLOW_ARTICLE_LINKS:
+            await check_atlantic_session(self.auth_manager, page, context, self.failures)
+
         print("✅ All components initialized successfully")
         return True
 

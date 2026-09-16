@@ -514,3 +514,41 @@ async def test_inventory_refresh_runs_off_the_event_loop_thread(mock_converter):
         await mock_converter.process_content(upload_to_remarkable=True)
 
     assert seen['thread'] is not threading.main_thread()
+
+
+# ---------------------------------------------------------------------------
+# The Atlantic session check runs during initialize() when link following is on,
+# and is non-fatal: the run proceeds, an expired jar just records an alert.
+# ---------------------------------------------------------------------------
+
+def _init_ready(mock_converter):
+    mock_converter.auth_manager = MagicMock()
+    mock_converter.auth_manager.authenticate_with_dispatch = AsyncMock(return_value=True)
+    mock_converter.browser_manager.start_browser_session = AsyncMock(return_value=True)
+    mock_converter.browser_manager.get_page.return_value = MagicMock()
+    mock_converter.browser_manager.get_context.return_value = MagicMock()
+
+
+async def test_initialize_runs_non_fatal_atlantic_check_when_following_links(mock_converter):
+    _init_ready(mock_converter)
+
+    async def fake_check(auth_manager, page, context, failures):
+        failures.append({"category": "auth", "item": "The Atlantic", "detail": "expired"})
+
+    with patch('main.check_dependencies', return_value=True), \
+         patch('main.FOLLOW_ARTICLE_LINKS', True), \
+         patch('main.check_atlantic_session', side_effect=fake_check) as chk:
+        ok = await mock_converter.initialize()
+
+    assert ok is True                      # non-fatal
+    chk.assert_called_once()
+    assert any(f["item"] == "The Atlantic" for f in mock_converter.failures)
+
+
+async def test_initialize_skips_atlantic_check_without_link_following(mock_converter):
+    _init_ready(mock_converter)
+    with patch('main.check_dependencies', return_value=True), \
+         patch('main.FOLLOW_ARTICLE_LINKS', False), \
+         patch('main.check_atlantic_session', new_callable=AsyncMock) as chk:
+        assert await mock_converter.initialize() is True
+    chk.assert_not_called()

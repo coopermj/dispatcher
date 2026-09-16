@@ -9,6 +9,7 @@
 credentials.json
 token.pickle
 dispatch_cookies.json
+atlantic_cookies.json
 
 # Tracking database
 dispatch_tracking.json
