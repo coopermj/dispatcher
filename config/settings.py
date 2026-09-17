@@ -169,6 +169,11 @@ PDF_MARGINS = {
 DEFAULT_RMAPI_PATH = os.getenv('RMAPI_PATH', "~/rmapi/rmapi")
 REMARKABLE_FOLDER = os.getenv('REMARKABLE_FOLDER', "News")
 RMAPI_TIMEOUT = get_int_env('RMAPI_TIMEOUT', 60)
+# When rmapi itself looks broken (ls fails, or a put exhausts its retries with
+# a non-auth error), fetch the latest release from GitHub and install it if
+# newer. Linux only; the old binary is kept as rmapi.prev.
+RMAPI_SELF_UPDATE = get_bool_env('RMAPI_SELF_UPDATE', True)
+RMAPI_RELEASE_REPO = os.getenv('RMAPI_RELEASE_REPO', 'ddvk/rmapi')
 # Automatic pruning of old unstarred docs from the News folder after each run
 PRUNE_NEWS_ENABLED = get_bool_env('PRUNE_NEWS_ENABLED', True)
 PRUNE_NEWS_DAYS = get_int_env('PRUNE_NEWS_DAYS', 10)
@@ -306,6 +311,7 @@ FORCE_REPROCESS=false
 BROWSER_HEADLESS=false
 UPLOAD_TO_REMARKABLE=true
 RMAPI_PATH=~/rmapi/rmapi
+RMAPI_SELF_UPDATE=true
 OUTPUT_DIR=dispatch_pdfs
 """
 

@@ -29,7 +29,8 @@ WORKAROUNDS = {
     "upload": ".venv/bin/python main.py --retry-uploads",
     "prune": ".venv/bin/python prune_news.py --confirm  (also retries automatically next run)",
     "rmapi": "Check `~/rmapi/rmapi ls`; if auth expired, re-register the device "
-             "with a code from https://my.remarkable.com/device/desktop/connect",
+             "with a code from https://my.remarkable.com/device/desktop/connect. "
+             "If the client self-updated, the previous binary is ~/rmapi/rmapi.prev",
     "auth": "Dispatch cookies expired: run ./refresh_tokens_mac.sh on the Mac (logs in, copies "
             "tokens to the box). Google token: run `.venv/bin/python main.py` interactively to re-consent",
     "scan": "Check debug_html/ for the latest snapshot — the site may be blocking the "

@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 from config.settings import DEFAULT_RMAPI_PATH, REMARKABLE_FOLDER, RMAPI_TIMEOUT
+from modules.alerts import record_failure
+from modules.rmapi_updater import self_update
 
 # Strip the generated filename prefix (dispatch_NNN_, dispatch_website_NNN_,
 # dispatch_email_NNN_) so a stored document name reduces to its article title.
@@ -47,11 +49,39 @@ def _normalize_document_name(name):
 class ReMarkableManager:
     """Manages ReMarkable device integration via rmapi"""
 
-    def __init__(self, rmapi_path=None):
+    def __init__(self, rmapi_path=None, failures=None):
         self.rmapi_path = os.path.expanduser(rmapi_path or DEFAULT_RMAPI_PATH)
         self.available = False
         self._inventory = None  # set of normalized titles; None = not yet fetched
+        # Run-level failure list (see modules.alerts); a self-update attempt is
+        # recorded here so the failure email says what was done about it.
+        self.failures = failures if failures is not None else []
+        self.self_heal_result = None  # UpdateResult once tried; at most once per run
         self.check_availability()
+
+    # --- self-healing -----------------------------------------------------
+
+    _AUTH_ERROR_MARKERS = ("401", "unauthorized", "token", "authenticat", "forbidden", "403")
+
+    @classmethod
+    def _looks_like_auth_error(cls, stderr):
+        text = (stderr or "").lower()
+        return any(marker in text for marker in cls._AUTH_ERROR_MARKERS)
+
+    def _try_self_heal(self, stderr):
+        """Once per run: if rmapi failed for a non-auth reason, install a newer
+        release if one exists. True if the binary was replaced (caller should
+        retry the failed operation once)."""
+        if self.self_heal_result is not None:
+            return False
+        if self._looks_like_auth_error(stderr):
+            print("🔐 rmapi error looks like an auth problem — a newer client won't fix that; not self-updating")
+            return False
+        print("🩹 rmapi failed — checking for a newer release to self-heal")
+        self.self_heal_result = self_update(self.rmapi_path)
+        print(f"🩹 {self.self_heal_result.summary()}")
+        record_failure(self.failures, "rmapi", "self-update", self.self_heal_result.summary())
+        return self.self_heal_result.status == "updated"
 
     def refresh_inventory(self, folder_name=None):
         """Fetch the live document inventory for a folder, normalized for matching.
@@ -111,6 +141,8 @@ class ReMarkableManager:
                 return True
             else:
                 print(f"❌ rmapi test failed: {result.stderr}")
+                if self._try_self_heal(result.stderr):
+                    return self.check_availability()
                 print(f"💡 Please ensure rmapi is properly configured and authenticated")
                 return False
 
@@ -187,6 +219,13 @@ class ReMarkableManager:
 
             print(f"❌ Upload failed after 3 attempts: {result.stderr}")
             print(f"📤 stdout: {result.stdout}")
+            if self._try_self_heal(result.stderr):
+                print(f"🔁 Retrying upload with the updated rmapi...")
+                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=put_timeout)
+                if result.returncode == 0:
+                    print(f"✅ Successfully uploaded {pdf_path.name} to ReMarkable/{folder_name} after self-update")
+                    return True
+                print(f"❌ Upload still failing after rmapi update: {result.stderr}")
             return False
 
         except subprocess.TimeoutExpired:

@@ -42,7 +42,8 @@ class DispatchPersistentConverter:
         self.browser_manager = BrowserManager()
         # Email pipeline keeps its own tracking file, separate from the website pipeline.
         self.tracking_manager = TrackingManager(tracking_file=DISPATCH_EMAIL_TRACKING_FILE)
-        self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH)
+        self.failures = []  # see modules.alerts; shared with ReMarkableManager
+        self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH, failures=self.failures)
 
         # URLs already converted by the website pipeline — skip them here to avoid
         # producing the same article twice across the two pipelines.
@@ -51,8 +52,6 @@ class DispatchPersistentConverter:
         if self.web_processed_urls:
             print(f"🔗 Loaded {len(self.web_processed_urls)} URLs from web scanner (cross-dedup)")
 
-        # Failure records for end-of-run alerting (modules/alerts.py)
-        self.failures = []
 
     def is_url_already_processed_by_web(self, url):
         """True if the website pipeline already produced a PDF for this URL."""

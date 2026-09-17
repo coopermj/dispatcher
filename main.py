@@ -70,7 +70,8 @@ class DispatchConverter:
         self.email_handler = EmailHandler(self.auth_manager)
         self.browser_manager = BrowserManager()
         self.tracking_manager = TrackingManager()
-        self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH)
+        self.failures = []  # see modules.alerts; shared with ReMarkableManager
+        self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH, failures=self.failures)
         self.website_scanner = WebsiteScanner(self.browser_manager, self.tracking_manager)  # Pass tracking for early duplicate detection
         # Configuration
         self.output_dir = Path(output_dir or OUTPUT_DIR)
@@ -93,8 +94,6 @@ class DispatchConverter:
             'total_linked_pages': 0,
             'follow_links_enabled': FOLLOW_ARTICLE_LINKS
         }
-        # Failure records for end-of-run alerting (modules/alerts.py)
-        self.failures = []
     
     def print_startup_banner(self):
         """Print application startup banner"""
