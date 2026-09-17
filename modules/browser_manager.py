@@ -16,6 +16,14 @@ from config.settings import (
 )
 
 
+# Shutdown time bounds (seconds). A hung Chromium once made browser.close()
+# never return, which kept a cron run alive for 27 days.
+BROWSER_CLOSE_TIMEOUT = 60
+PLAYWRIGHT_STOP_TIMEOUT = 30
+PAGE_CLOSE_TIMEOUT = 15
+DRIVER_TERMINATE_GRACE = 10
+
+
 class BrowserManager:
     """Manages browser automation and PDF generation"""
     
@@ -61,15 +69,82 @@ class BrowserManager:
             return False
 
     async def close_browser_session(self):
-        """Close the browser session"""
-        try:
-            if self.browser:
-                await self.browser.close()
-            if hasattr(self, 'p') and self.p:
-                await self.p.stop()
+        """Close the browser session, never hanging.
+
+        Each await is time-bounded. If Chromium stops answering, browser.close()
+        can block forever (seen in production: a cron run sat here for 27 days
+        with the node driver and 12 chromium children alive). On any timeout we
+        stop being polite and kill the Playwright driver process; the driver
+        tears down its browsers when it exits.
+        """
+        hung = False
+        browser, p = self.browser, getattr(self, 'p', None)
+        # Drop the handles first so a second call (or a stray reference) cannot
+        # re-enter a close that is already known to hang.
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.p = None
+        self.playwright = None
+
+        if browser:
+            hung = not await self._bounded(browser.close(), BROWSER_CLOSE_TIMEOUT,
+                                           "browser.close()")
+        if p and not hung:
+            hung = not await self._bounded(p.stop(), PLAYWRIGHT_STOP_TIMEOUT,
+                                           "playwright.stop()")
+        if hung:
+            await self._kill_driver_process(p)
+            print("🔒 Browser session force-closed after timeout")
+        else:
             print("🔒 Browser session closed")
+
+    @staticmethod
+    async def _bounded(coro, timeout, label):
+        """Await coro for at most `timeout` seconds. True if it finished (or
+        raised — a failed close is still a finished close), False on timeout."""
+        try:
+            await asyncio.wait_for(coro, timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            print(f"⚠️ {label} did not return within {timeout}s — forcing shutdown")
+            return False
         except Exception as e:
-            print(f"⚠️ Error closing browser: {e}")
+            print(f"⚠️ Error in {label}: {e}")
+            return True
+
+    @staticmethod
+    def _driver_process(p):
+        """The asyncio subprocess running the Playwright node driver. This walks
+        private attributes (no public API in playwright-python), so it may be
+        None on a future Playwright version — callers must cope."""
+        try:
+            return p._impl_obj._connection._transport._proc
+        except AttributeError:
+            return None
+
+    async def _kill_driver_process(self, p):
+        proc = self._driver_process(p) if p is not None else None
+        if proc is None:
+            print("⚠️ No Playwright driver process handle available; relying on "
+                  "the process-level timeout in run_pipeline.sh")
+            return
+        try:
+            print(f"🔪 Terminating Playwright driver (pid {proc.pid})")
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=DRIVER_TERMINATE_GRACE)
+                return
+            except asyncio.TimeoutError:
+                print(f"🔪 Driver ignored SIGTERM for {DRIVER_TERMINATE_GRACE}s; sending SIGKILL")
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), timeout=DRIVER_TERMINATE_GRACE)
+        except ProcessLookupError:
+            pass  # already gone
+        except asyncio.TimeoutError:
+            print("⚠️ Driver did not exit after SIGKILL; leaving it to run_pipeline.sh's timeout")
+        except Exception as e:
+            print(f"⚠️ Error killing Playwright driver: {e}")
 
     async def save_html_snapshot_from_page(self, page, filename_suffix, url=""):
         """Save HTML from a specific page object for debugging"""
@@ -331,12 +406,9 @@ class BrowserManager:
             return None
 
     async def close_page(self, page):
-        """Close a specific page"""
+        """Close a specific page (time-bounded; a hung tab must not stall the run)"""
         if page and page != self.page:  # Don't close the main page
-            try:
-                await page.close()
-            except Exception as e:
-                print(f"⚠️ Error closing page: {e}")
+            await self._bounded(page.close(), PAGE_CLOSE_TIMEOUT, "page.close()")
 
     async def convert_url_to_pdf_with_page(self, url, output_filename, page=None):
         """Convert URL to PDF using a specific page (for parallel operations)"""

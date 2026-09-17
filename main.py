@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import sys
 import time
 import traceback
@@ -721,6 +722,26 @@ async def main():
     return 0 if ok else EXIT_FAILURE_ALERTED
 
 
+def hard_exit(code):
+    """Exit immediately with `code` once main() has returned.
+
+    sys.exit() would still run interpreter teardown: joining threads, closing
+    the event loop's remaining transports, waiting on subprocess pipes. With a
+    Chromium that stopped answering, any of those can block, and a cron job
+    that never exits is worse than one that skips teardown (see the 27-day
+    hang of 2026-08-19). Everything that matters — tracking JSONs, alerts,
+    the failure report — has already been written by the time main() returns.
+    stdout/stderr are flushed first because cron redirects them to a
+    block-buffered log file.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
+
+
 if __name__ == "__main__":
     # Print welcome message
     print("🚀 THE DISPATCH PDF CONVERTER - MODULAR VERSION")
@@ -750,7 +771,7 @@ if __name__ == "__main__":
     # input()
 
     try:
-        sys.exit(asyncio.run(main()))
+        hard_exit(asyncio.run(main()))
     except KeyboardInterrupt:
         print("\n👋 Goodbye!")
         sys.exit(130)
