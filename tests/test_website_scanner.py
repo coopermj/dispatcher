@@ -37,3 +37,23 @@ def test_real_index_pages_are_skipped():
         "https://thedispatch.com/search",
     ]
     assert _filter(urls) == []
+
+
+async def test_scan_records_candidate_count_before_filtering():
+    """A quiet Sunday slot found 307 links and filtered all of them as already
+    processed, yet alerted 'no content found' as if blocked. The scanner must
+    expose how many unique links it saw BEFORE filtering so main.py can tell
+    'nothing new' from 'blocked or logged out'."""
+    from unittest.mock import AsyncMock, patch
+    s = _scanner()
+    a, b = _article('https://thedispatch.com/newsletter/one/'), _article('https://thedispatch.com/newsletter/two/')
+    s.scan_homepage = AsyncMock(return_value=[a, b])
+    s.scan_sections_parallel = AsyncMock(return_value=[[b]])  # duplicate of b
+    with patch.object(s, 'filter_articles', return_value=[]):
+        found = await s.scan_for_articles(15)
+    assert found == []
+    assert s.candidates_found == 2, "unique links seen before filtering"
+
+
+def test_scanner_starts_with_zero_candidates():
+    assert _scanner().candidates_found == 0

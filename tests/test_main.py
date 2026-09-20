@@ -552,3 +552,40 @@ async def test_initialize_skips_atlantic_check_without_link_following(mock_conve
          patch('main.check_atlantic_session', new_callable=AsyncMock) as chk:
         assert await mock_converter.initialize() is True
     chk.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# "No content found" must distinguish blocked/logged-out from "nothing new"
+# ---------------------------------------------------------------------------
+
+async def test_all_candidates_filtered_is_a_clean_run_not_a_scan_failure(mock_converter, monkeypatch):
+    """Scanner saw hundreds of links but every one was already processed (a
+    quiet Sunday 17:00 slot). That is success, not 'blocked'; no alert."""
+    import main
+    alerts = []
+    monkeypatch.setattr(main, 'alert_on_failures', lambda failures, run_label="": alerts.append(list(failures)))
+    mock_converter.initialize = AsyncMock(return_value=True)
+    mock_converter.get_website_content = AsyncMock(return_value=[])
+    mock_converter.website_scanner.candidates_found = 307
+
+    ok = await mock_converter.process_content(max_items=15, upload_to_remarkable=False)
+
+    assert ok is True
+    assert not [f for f in mock_converter.failures if f['category'] == 'scan']
+    assert alerts == []
+
+
+async def test_zero_candidates_still_alerts_as_scan_failure(mock_converter, monkeypatch):
+    """Scanner saw NOTHING at all — that is the blocked/logged-out signature."""
+    import main
+    alerts = []
+    monkeypatch.setattr(main, 'alert_on_failures', lambda failures, run_label="": alerts.append(list(failures)))
+    mock_converter.initialize = AsyncMock(return_value=True)
+    mock_converter.get_website_content = AsyncMock(return_value=[])
+    mock_converter.website_scanner.candidates_found = 0
+
+    ok = await mock_converter.process_content(max_items=15, upload_to_remarkable=False)
+
+    assert ok is False
+    assert [f for f in mock_converter.failures if f['category'] == 'scan']
+    assert len(alerts) == 1

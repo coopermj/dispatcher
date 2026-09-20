@@ -28,6 +28,10 @@ class WebsiteScanner:
         self.browser_manager = browser_manager
         self.tracking_manager = tracking_manager
         self.found_articles = []
+        # Unique links seen by the last scan BEFORE age/keyword/duplicate
+        # filtering. 0 means the site gave us nothing (blocked or logged out);
+        # >0 with an empty result means everything was already processed.
+        self.candidates_found = 0
         self.processed_urls = set()  # Cache of already-processed URLs
 
         # Load processed URLs from tracking manager for early duplicate detection
@@ -63,6 +67,8 @@ class WebsiteScanner:
             if article['url'] not in seen_urls:
                 seen_urls.add(article['url'])
                 unique_articles.append(article)
+
+        self.candidates_found = len(unique_articles)
 
         # Filter by age and keywords
         filtered_articles = self.filter_articles(unique_articles)

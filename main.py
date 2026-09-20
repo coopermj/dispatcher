@@ -237,8 +237,18 @@ class DispatchConverter:
                 content_list = await self.get_website_content(max_items)
 
             if not content_list:
-                # Zero results almost always means we're blocked or logged out,
-                # not that The Dispatch published nothing — alert, don't shrug.
+                # Distinguish "nothing new" from "blocked or logged out". The
+                # scanner reports how many links it saw before filtering: if it
+                # saw plenty and every one was already processed (a quiet Sunday
+                # 17:00 slot), that's a clean run. Zero links seen is the
+                # blocked/expired-cookies signature — alert, don't shrug.
+                candidates = getattr(getattr(self, 'website_scanner', None), 'candidates_found', 0)
+                if not isinstance(candidates, int):
+                    candidates = 0
+                if self.processing_mode == 'website' and candidates > 0:
+                    print(f"ℹ️  Scan saw {candidates} links; all already processed or filtered — "
+                          f"nothing new since the last run")
+                    return True
                 print(f"❌ No {self.processing_mode} content found")
                 record_failure(self.failures, "scan", f"{self.processing_mode} scan",
                                "no content found")
