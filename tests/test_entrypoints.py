@@ -37,3 +37,16 @@ def test_run_pipeline_treats_timeout_exit_as_crash():
     body = (ROOT / "run_pipeline.sh").read_text()
     assert "124" in body, "run_pipeline.sh should name timeout's exit status 124"
     assert "TIMED OUT" in body
+
+
+def test_run_pipeline_runs_main_unbuffered():
+    """Python 3.14 raised the default file buffer to 128 KiB, so with stdout
+    redirected to cron_run.log nothing appears for many minutes and, if
+    timeout(1) kills the run, the buffered tail (with the crash) is lost and
+    the crash email carries an empty log. Both main.py invocations must run
+    unbuffered."""
+    body = (ROOT / "run_pipeline.sh").read_text()
+    invocations = [line for line in body.splitlines() if '"$PY" main.py' in line]
+    assert invocations, "no main.py invocation found"
+    for line in invocations:
+        assert "PYTHONUNBUFFERED=1" in line, line

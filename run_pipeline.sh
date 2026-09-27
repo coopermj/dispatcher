@@ -44,11 +44,14 @@ fi
 
 # GNU coreutils timeout exists on the Linux box; macOS lacks it, so fall back
 # to an unbounded run there (the Mac is not the scheduler).
+# PYTHONUNBUFFERED: Python 3.14 buffers 128 KiB of stdout when redirected to
+# a file, so the log would show nothing for minutes and lose its tail (the
+# crash) if timeout(1) kills the run.
 if command -v timeout >/dev/null 2>&1; then
     # SIGTERM at the deadline; SIGKILL 60s later if the process ignores it.
-    timeout --kill-after=60 "$RUN_TIMEOUT" "$PY" main.py > cron_run.log 2>&1
+    PYTHONUNBUFFERED=1 timeout --kill-after=60 "$RUN_TIMEOUT" "$PY" main.py > cron_run.log 2>&1
 else
-    "$PY" main.py > cron_run.log 2>&1
+    PYTHONUNBUFFERED=1 "$PY" main.py > cron_run.log 2>&1
 fi
 rc=$?
 
