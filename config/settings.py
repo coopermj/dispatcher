@@ -174,6 +174,13 @@ RMAPI_TIMEOUT = get_int_env('RMAPI_TIMEOUT', 60)
 # newer. Linux only; the old binary is kept as rmapi.prev.
 RMAPI_SELF_UPDATE = get_bool_env('RMAPI_SELF_UPDATE', True)
 RMAPI_RELEASE_REPO = os.getenv('RMAPI_RELEASE_REPO', 'ddvk/rmapi')
+
+# Dead-man's switch: a healthchecks.io-style ping URL (https://hc-ping.com/<uuid>).
+# run_pipeline.sh pings <url>/start before a run, <url> on success and
+# <url>/fail (with the failure report) otherwise, so an outside service notices
+# when the box goes silent — the Gmail-based alerts share the Gmail token and
+# went quiet for six days when it expired. Empty = disabled.
+HEALTHCHECK_URL = os.getenv('HEALTHCHECK_URL', '').strip()
 # Automatic pruning of old unstarred docs from the News folder after each run
 PRUNE_NEWS_ENABLED = get_bool_env('PRUNE_NEWS_ENABLED', True)
 PRUNE_NEWS_DAYS = get_int_env('PRUNE_NEWS_DAYS', 10)
@@ -312,6 +319,7 @@ BROWSER_HEADLESS=false
 UPLOAD_TO_REMARKABLE=true
 RMAPI_PATH=~/rmapi/rmapi
 RMAPI_SELF_UPDATE=true
+HEALTHCHECK_URL=
 OUTPUT_DIR=dispatch_pdfs
 """
 

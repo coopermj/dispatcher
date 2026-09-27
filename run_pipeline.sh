@@ -10,10 +10,35 @@
 #   one run stuck in browser.close() for 27 days once made every later cron
 #   run exit on the collision guard. 4h fits between the 6:30/7:05 morning
 #   slots and the 17:00 slot, and between 17:00 and the next morning.
+# - Dead-man's switch: if HEALTHCHECK_URL is set in .env, every run pings
+#   <url>/start, then <url> on success or <url>/fail with the failure report.
+#   The email alerts above all ride the Gmail token; when it expired on
+#   2026-09-21 they went silent for six days. An outside service that expects
+#   a ping per cron slot notices silence no matter what broke.
 cd "$(dirname "$0")" || exit 1
 PY=.venv/bin/python
 LOCK=/tmp/dispatchweb.run.lock
 RUN_TIMEOUT="${RUN_TIMEOUT:-4h}"
+# config.settings prints a status banner on import; the URL is the last line.
+HC_URL="$("$PY" -c 'from config.settings import HEALTHCHECK_URL; print(HEALTHCHECK_URL)' 2>/dev/null | tail -n 1)"
+
+# hc_ping start|success|fail [body-file]  — best effort, never fails the run.
+hc_ping() {
+    [ -n "$HC_URL" ] || return 0
+    local url="$HC_URL"
+    case "$1" in
+        start) url="$HC_URL/start" ;;
+        fail)  url="$HC_URL/fail" ;;
+    esac
+    if [ -n "${2:-}" ] && [ -f "$2" ]; then
+        curl -fsS -m 10 --retry 3 -o /dev/null --data-binary "@$2" "$url" \
+            || echo "healthcheck ping ($1) failed" >&2
+    else
+        curl -fsS -m 10 --retry 3 -o /dev/null "$url" \
+            || echo "healthcheck ping ($1) failed" >&2
+    fi
+    return 0
+}
 
 collision_alert() {
     "$PY" - <<'PYEOF'
@@ -47,6 +72,7 @@ fi
 # PYTHONUNBUFFERED: Python 3.14 buffers 128 KiB of stdout when redirected to
 # a file, so the log would show nothing for minutes and lose its tail (the
 # crash) if timeout(1) kills the run.
+hc_ping start
 if command -v timeout >/dev/null 2>&1; then
     # SIGTERM at the deadline; SIGKILL 60s later if the process ignores it.
     PYTHONUNBUFFERED=1 timeout --kill-after=60 "$RUN_TIMEOUT" "$PY" main.py > cron_run.log 2>&1
@@ -87,5 +113,21 @@ send_email_alert(
     f"--- log tail ---\n{tail}",
 )
 PYEOF
+fi
+
+if [ "$rc" -eq 0 ]; then
+    hc_ping success
+else
+    # Body: this run's failure report (main.py writes it only when rc=2) plus
+    # the log tail. healthchecks keeps the first 100 KB of a ping body.
+    HC_BODY="$(mktemp)"
+    {
+        echo "exit status: $rc"
+        [ "$rc" -eq 2 ] && [ -f last_run_failures.md ] && cat last_run_failures.md
+        echo; echo "--- log tail ---"
+        tail -c 20000 cron_run.log 2>/dev/null
+    } > "$HC_BODY"
+    hc_ping fail "$HC_BODY"
+    rm -f "$HC_BODY"
 fi
 exit $rc
