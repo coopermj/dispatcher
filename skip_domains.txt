@@ -7,3 +7,5 @@ wsj.com
 washingtonpost.com
 ft.com
 economist.com
+# Bot protection 403s every automated browser (Sept 2026)
+theatlantic.com

@@ -6,7 +6,6 @@ Authentication manager for Google OAuth and The Dispatch
 import os
 import pickle
 import json
-import re
 import sys
 import time
 import asyncio
@@ -20,9 +19,7 @@ from googleapiclient.discovery import build
 from config.settings import (
     GOOGLE_SCOPES, CREDENTIALS_FILE, TOKEN_FILE, COOKIES_FILE,
     DISPATCH_BASE_URL, BROWSER_HEADLESS,
-    ATLANTIC_COOKIES_FILE, ATLANTIC_BASE_URL, ATLANTIC_LOGIN_URL
 )
-from modules.alerts import record_failure
 
 # Reads the page's own login state. The Dispatch gates its account UI with
 # Alpine `x-show="$store.user.loaded && $store.user.valid"`; the markup itself
@@ -59,47 +56,6 @@ async def is_logged_in(page):
     if not isinstance(state, dict):
         return False
     return bool(state.get('loaded')) and bool(state.get('valid'))
-
-
-# The Atlantic renders login state server-side (probe 2026-09-16): every page
-# embeds "isLoggedIn": true|false, and the nav shows My Account
-# (accounts.theatlantic.com/accounts/details/) when signed in vs Sign In
-# (accounts.theatlantic.com/login/) when not. So, unlike The Dispatch, a static
-# HTML check is trustworthy here.
-_ATLANTIC_FLAG_RE = re.compile(r'"isLoggedIn"\s*:\s*(true|false)')
-ATLANTIC_ACCOUNT_LINK = 'accounts.theatlantic.com/accounts/details/'
-
-
-def atlantic_looks_logged_in(html):
-    """True if the page says we're a signed-in Atlantic member. An explicit
-    isLoggedIn:false wins over everything; with no flag, the My Account link counts."""
-    if not html:
-        return False
-    flags = set(_ATLANTIC_FLAG_RE.findall(html))
-    if 'false' in flags:
-        return False
-    if 'true' in flags:
-        return True
-    return ATLANTIC_ACCOUNT_LINK in html
-
-
-async def check_atlantic_session(auth_manager, page, browser_context, failures):
-    """Once-per-run, NON-fatal Atlantic session check for pipelines that follow links.
-
-    No jar → the feature was never set up: print a hint, record nothing (no
-    nightly noise). Jar present but dead → record an 'auth' failure so the
-    end-of-run alert points at refresh_tokens_mac.sh, but let the run continue:
-    linked pages are secondary content; only Dispatch auth aborts a run.
-    """
-    if not Path(ATLANTIC_COOKIES_FILE).exists():
-        print("ℹ️ No Atlantic cookie jar — linked theatlantic.com pages will render as a "
-              "non-subscriber (run ./refresh_tokens_mac.sh to add one)")
-        return False
-    if await auth_manager.authenticate_with_atlantic(page, browser_context, interactive=False):
-        return True
-    record_failure(failures, "auth", "The Atlantic",
-                   "session expired — linked Atlantic pages will render truncated")
-    return False
 
 
 class AuthManager:
@@ -214,69 +170,6 @@ class AuthManager:
     async def load_dispatch_cookies(self, browser_context):
         """Load The Dispatch browser cookies from file"""
         return await self._load_cookies(browser_context, COOKIES_FILE, 'Dispatch')
-
-    async def save_atlantic_cookies(self, browser_context):
-        return await self._save_cookies(browser_context, 'theatlantic.com', ATLANTIC_COOKIES_FILE, 'Atlantic')
-
-    async def load_atlantic_cookies(self, browser_context):
-        return await self._load_cookies(browser_context, ATLANTIC_COOKIES_FILE, 'Atlantic')
-
-    # ---- The Atlantic ----
-
-    async def test_atlantic_authentication(self, page):
-        """Load the Atlantic homepage and read its server-rendered login state."""
-        try:
-            print("🔍 Testing The Atlantic session...")
-            await page.goto(ATLANTIC_BASE_URL, timeout=30000)
-            await asyncio.sleep(3)
-            if atlantic_looks_logged_in(await page.content()):
-                print("✅ The Atlantic: signed in with saved cookies")
-                return True
-            print("❌ The Atlantic: not signed in (page shows Sign In / isLoggedIn=false)")
-            return False
-        except Exception as e:
-            print(f"⚠️ Error testing The Atlantic session: {e}")
-            return False
-
-    async def authenticate_with_atlantic(self, page, browser_context, interactive=None):
-        """Sign in to The Atlantic via saved cookies, or interactively on a Mac.
-
-        Mirrors authenticate_with_dispatch: fails closed, never overwrites the
-        jar on failure. Interactive login goes through the site's own form
-        (which may show a CAPTCHA — the human solves it); we only keep cookies.
-        """
-        if interactive is None:
-            interactive = sys.stdin.isatty() and not BROWSER_HEADLESS
-        try:
-            if await self.load_atlantic_cookies(browser_context):
-                if await self.test_atlantic_authentication(page):
-                    return True
-                print("🔄 Saved Atlantic cookies expired or invalid")
-
-            if not interactive:
-                print("❌ Not signed in to The Atlantic and no interactive session to sign in with")
-                return False
-
-            print("🔑 The Atlantic: sign in in the browser window (up to 5 minutes)...")
-            await page.goto(ATLANTIC_LOGIN_URL, timeout=30000)
-            max_wait_seconds, check_interval, elapsed = 300, 3, 0
-            while elapsed < max_wait_seconds:
-                await asyncio.sleep(check_interval)
-                elapsed += check_interval
-                try:
-                    if atlantic_looks_logged_in(await page.content()):
-                        print("✅ The Atlantic login detected!")
-                        await self.save_atlantic_cookies(browser_context)
-                        return True
-                except Exception:
-                    pass  # mid-navigation; try again next tick
-                if elapsed % 30 == 0:
-                    print(f"⏳ Still waiting for The Atlantic login... ({elapsed}s)")
-            print("⏰ Timed out waiting for The Atlantic login — nothing saved")
-            return False
-        except Exception as e:
-            print(f"❌ The Atlantic authentication error: {e}")
-            return False
 
     # ---- The Dispatch ----
 

@@ -150,3 +150,25 @@ def test_wrapper_captures_only_the_url_despite_settings_banner_output(tmp_path):
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                        env={**os.environ, "HEALTHCHECK_URL": "https://hc.example/abc"})
     assert r.stdout == "https://hc.example/abc", repr(r.stdout)
+
+
+
+async def test_refresh_auth_does_not_attempt_an_atlantic_login(monkeypatch):
+    """The Atlantic blocks automated browsers now; an interactive attempt would
+    sit on the block page for its full 5-minute wait on every token refresh."""
+    from unittest.mock import AsyncMock, MagicMock
+    import refresh_auth
+    bm = MagicMock()
+    bm.start_browser_session = AsyncMock(return_value=True)
+    bm.close_browser_session = AsyncMock()
+    monkeypatch.setattr(refresh_auth, "BrowserManager", lambda: bm)
+    am = MagicMock()
+    am.authenticate_with_dispatch = AsyncMock(return_value=True)
+    am.authenticate_with_atlantic = AsyncMock(return_value=True)
+    assert await refresh_auth.refresh_dispatch(am) is True
+    am.authenticate_with_atlantic.assert_not_called()
+
+
+def test_refresh_tokens_mac_no_longer_ships_an_atlantic_jar():
+    body = (ROOT / "refresh_tokens_mac.sh").read_text()
+    assert "atlantic_cookies.json" not in body

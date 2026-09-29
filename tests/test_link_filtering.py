@@ -103,25 +103,43 @@ def test_short_anchor_citations_are_followed():
 
 # ---------------------------------------------------------------------------
 # '/archive/' must mean an archive INDEX page, not any URL containing the word.
-# The Atlantic puts every article under /<section>/archive/YYYY/MM/<slug>/<id>/,
-# so the old substring rule silently rejected all Atlantic links (found while
-# adding the Atlantic login — the feature was a no-op without this).
+# Some sites (The Atlantic, before it was dropped) file every article under
+# /<section>/archive/YYYY/MM/<slug>/<id>/; a substring rule rejected them all.
 # ---------------------------------------------------------------------------
 
-def test_atlantic_archive_article_urls_are_followed():
+def test_archive_article_urls_are_followed():
     from unittest.mock import MagicMock
     from modules.link_processor import LinkProcessor
     lp = LinkProcessor(MagicMock())
     assert lp.should_follow_link(
-        "https://www.theatlantic.com/politics/archive/2025/06/trump-interview-iran-israel/683192/") is True
+        "https://www.example.com/politics/archive/2025/06/trump-interview-iran-israel/683192/") is True
     assert lp.should_follow_link(
-        "https://www.theatlantic.com/ideas/archive/2022/11/veterans-day-us-military-iraq/672081/") is True
+        "https://www.example.com/ideas/archive/2022/11/veterans-day-us-military-iraq/672081/") is True
 
 
 def test_archive_index_pages_are_still_rejected():
     from unittest.mock import MagicMock
     from modules.link_processor import LinkProcessor
     lp = LinkProcessor(MagicMock())
-    assert lp.should_follow_link("https://www.theatlantic.com/archive/") is False
     assert lp.should_follow_link("https://example.com/archive") is False
     assert lp.should_follow_link("https://example.com/blog/archive/") is False
+
+
+# ---------------------------------------------------------------------------
+# The Atlantic is no longer followed: since ~late Sept 2026 its bot protection
+# answers every automated browser with a 403 "Your access has been blocked".
+# Driven by the checked-in skip_domains.txt, not a patched list.
+# ---------------------------------------------------------------------------
+
+def test_atlantic_links_are_not_followed():
+    from unittest.mock import MagicMock
+    from modules.link_processor import LinkProcessor
+    lp = LinkProcessor(MagicMock())
+    assert lp.should_follow_link(
+        "https://www.theatlantic.com/politics/archive/2025/06/trump-interview-iran-israel/683192/") is False
+    assert lp.should_follow_link("https://theatlantic.com/ideas/some-essay/") is False
+
+
+def test_skip_domains_file_lists_the_atlantic():
+    from config.settings import load_skip_domains
+    assert "theatlantic.com" in load_skip_domains()
