@@ -129,11 +129,19 @@ def test_run_pipeline_pings_start_then_success_or_fail():
 
 
 def test_settings_expose_healthcheck_url_defaulting_to_empty(monkeypatch):
-    monkeypatch.delenv("HEALTHCHECK_URL", raising=False)
+    """Default must be empty (switch off). Isolated from the real .env: on the
+    box it holds the live ping URL, which made this test fail after deploy."""
     import importlib
+    import dotenv
     import config.settings as settings
-    importlib.reload(settings)
-    assert settings.HEALTHCHECK_URL == ""
+    monkeypatch.delenv("HEALTHCHECK_URL", raising=False)
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
+    try:
+        importlib.reload(settings)
+        assert settings.HEALTHCHECK_URL == ""
+    finally:
+        monkeypatch.undo()          # restore env + the real load_dotenv
+        importlib.reload(settings)  # so later tests see normal settings
 
 
 def test_wrapper_captures_only_the_url_despite_settings_banner_output(tmp_path):
