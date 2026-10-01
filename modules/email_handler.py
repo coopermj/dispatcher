@@ -27,7 +27,11 @@ class EmailHandler:
         return self.service
     
     def search_dispatch_emails(self, max_results=None):
-        """Search for emails from The Dispatch"""
+        """Search for emails from The Dispatch.
+
+        Returns a list ([] = genuinely nothing in the window, e.g. a Sunday) or
+        None when the search itself failed (no service, token/API error) so the
+        caller can alert on failures without alerting on quiet days."""
         if max_results is None:
             max_results = DEFAULT_MAX_EMAILS
             
@@ -35,7 +39,7 @@ class EmailHandler:
             service = self._get_service()
             if not service:
                 print("❌ Gmail service not available")
-                return []
+                return None
                 
             results = service.users().messages().list(
                 userId='me', q=GMAIL_SEARCH_QUERY, maxResults=max_results
@@ -47,7 +51,7 @@ class EmailHandler:
 
         except Exception as e:
             print(f"❌ Error searching emails: {e}")
-            return []
+            return None
 
     def get_message_content(self, message_id):
         """Get full message content"""

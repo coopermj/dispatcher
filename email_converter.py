@@ -109,8 +109,15 @@ class DispatchPersistentConverter:
 
             # Step 6: Get the recent email list (GMAIL_SEARCH_QUERY scopes to last 7 days)
             messages = self.email_handler.search_dispatch_emails(max_emails)
+            if messages is None:
+                print("❌ Gmail search failed")
+                record_failure(self.failures, "scan", "Gmail search",
+                               "search failed (token/API error) — see log")
+                await self.browser_manager.close_browser_session()
+                return
             if not messages:
-                print("❌ No emails found")
+                # A quiet day (Sundays) is not a failure
+                print("ℹ️ No new Dispatch emails in the search window — nothing to do")
                 await self.browser_manager.close_browser_session()
                 return
 

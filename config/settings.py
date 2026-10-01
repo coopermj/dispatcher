@@ -179,6 +179,11 @@ HEALTHCHECK_URL = os.getenv('HEALTHCHECK_URL', '').strip()
 # Automatic pruning of old unstarred docs from the News folder after each run
 PRUNE_NEWS_ENABLED = get_bool_env('PRUNE_NEWS_ENABLED', True)
 PRUNE_NEWS_DAYS = get_int_env('PRUNE_NEWS_DAYS', 10)
+# Pending uploads retried automatically per run (bounded so one bad day can't
+# stall a run); pending items older than PRUNE_NEWS_DAYS are abandoned instead.
+RETRY_UPLOADS_PER_RUN = get_int_env('RETRY_UPLOADS_PER_RUN', 10)
+# Alert when free disk on the project volume drops below this many GB.
+DISK_FREE_MIN_GB = get_int_env('DISK_FREE_MIN_GB', 2)
 
 # The Dispatch website settings
 DISPATCH_BASE_URL = os.getenv('DISPATCH_BASE_URL', "https://thedispatch.com")

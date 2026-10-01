@@ -578,3 +578,117 @@ async def test_zero_candidates_still_alerts_as_scan_failure(mock_converter, monk
     assert ok is False
     assert [f for f in mock_converter.failures if f['category'] == 'scan']
     assert len(alerts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Disk hygiene: automatic upload retry, bounded; disk-space alert; email
+# search error vs. empty mailbox in main.py's email mode.
+# ---------------------------------------------------------------------------
+import json as _json
+
+
+def _pending_entry(tmp_path, name, days_old):
+    from datetime import datetime, timedelta
+    pdf = tmp_path / f"{name}.pdf"; pdf.write_bytes(b"x")
+    return {"subject": name, "pdf_path": str(pdf), "success": True, "remarkable_uploaded": False,
+            "processed_date": (datetime.now() - timedelta(days=days_old)).isoformat()}
+
+
+def test_retry_failed_uploads_is_capped_and_skips_stale(mock_converter, tmp_path):
+    mock_converter.remarkable_manager = MagicMock()
+    mock_converter.remarkable_manager.is_available.return_value = True
+    mock_converter.remarkable_manager.upload_if_new.return_value = True
+    mock_converter.tracking_manager.processed_emails = {
+        "a": _pending_entry(tmp_path, "a", 1), "b": _pending_entry(tmp_path, "b", 2),
+        "c": _pending_entry(tmp_path, "c", 3), "stale": _pending_entry(tmp_path, "stale", 30)}
+    email_tf = tmp_path / "email_tracking.json"; email_tf.write_text("{}")
+
+    with patch('main.DISPATCH_EMAIL_TRACKING_FILE', email_tf):
+        retried, succeeded = mock_converter.retry_failed_uploads(max_items=2, max_age_days=10)
+
+    assert (retried, succeeded) == (2, 2)
+    uploaded = {k for k, e in mock_converter.tracking_manager.processed_emails.items() if e["remarkable_uploaded"]}
+    assert len(uploaded) == 2 and "stale" not in uploaded
+
+
+def test_retry_failed_uploads_uses_configured_email_tracking_path(mock_converter, tmp_path):
+    """The email tracking path was hardcoded next to main.py; it must follow settings."""
+    mock_converter.remarkable_manager = MagicMock()
+    mock_converter.remarkable_manager.is_available.return_value = True
+    mock_converter.remarkable_manager.upload_if_new.return_value = True
+    mock_converter.tracking_manager.processed_emails = {}
+    email_tf = tmp_path / "email_tracking.json"
+    email_tf.write_text(_json.dumps({"e1": _pending_entry(tmp_path, "e1", 1)}))
+
+    with patch('main.DISPATCH_EMAIL_TRACKING_FILE', email_tf):
+        assert mock_converter.retry_failed_uploads() == (1, 1)
+    assert _json.loads(email_tf.read_text())["e1"]["remarkable_uploaded"] is True
+
+
+def _content_run(mock_converter, **patches):
+    """process_content with init/scan/convert stubbed, returning the recorded failures."""
+    item = {'subject': 'S', 'read_online_url': 'https://thedispatch.com/article/s/', 'message_id': 'm', 'sender': 'x', 'date': 'd'}
+    mock_converter.tracking_manager.is_email_processed.return_value = False
+    mock_converter.remarkable_manager = MagicMock()
+    mock_converter.remarkable_manager.is_available.return_value = True
+    ctx = [patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=True),
+           patch.object(mock_converter, 'get_website_content', new_callable=AsyncMock, return_value=[item]),
+           patch.object(mock_converter, 'process_items_parallel', new_callable=AsyncMock),
+           patch('main.PRUNE_NEWS_ENABLED', False), patch('main.alert_on_failures')]
+    ctx += [patch(k, **v) if isinstance(v, dict) else patch(k, v) for k, v in patches.items()]
+    return ctx
+
+
+async def test_process_content_retries_pending_uploads_each_run(mock_converter):
+    with patch.object(mock_converter, 'retry_failed_uploads', return_value=(0, 0)) as retry:
+        ctx = _content_run(mock_converter)
+        for c in ctx: c.start()
+        try:
+            await mock_converter.process_content(upload_to_remarkable=True)
+        finally:
+            for c in ctx: c.stop()
+    retry.assert_called_once()
+    assert retry.call_args[1].get("max_age_days") is not None
+
+
+async def test_process_content_skips_retry_when_uploads_disabled(mock_converter):
+    with patch.object(mock_converter, 'retry_failed_uploads') as retry:
+        ctx = _content_run(mock_converter)
+        for c in ctx: c.start()
+        try:
+            await mock_converter.process_content(upload_to_remarkable=False)
+        finally:
+            for c in ctx: c.stop()
+    retry.assert_not_called()
+
+
+async def test_low_disk_space_is_recorded_as_failure(mock_converter):
+    ctx = _content_run(mock_converter, **{'main.DISK_FREE_MIN_GB': 2})
+    with patch.object(mock_converter, 'retry_failed_uploads', return_value=(0, 0)), \
+         patch('prune_news.check_disk_free', return_value=1.2):
+        for c in ctx: c.start()
+        try:
+            await mock_converter.process_content(upload_to_remarkable=True)
+        finally:
+            for c in ctx: c.stop()
+    assert any(f["category"] == "disk" for f in mock_converter.failures)
+
+
+async def test_email_mode_empty_mailbox_is_quiet_success(mock_converter):
+    mock_converter.processing_mode = 'email'
+    mock_converter.email_handler = MagicMock()
+    mock_converter.email_handler.search_dispatch_emails.return_value = []
+    with patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=True), \
+         patch('main.alert_on_failures') as alert:
+        assert await mock_converter.process_content(upload_to_remarkable=False) is True
+    assert mock_converter.failures == []
+
+
+async def test_email_mode_search_error_is_scan_failure(mock_converter):
+    mock_converter.processing_mode = 'email'
+    mock_converter.email_handler = MagicMock()
+    mock_converter.email_handler.search_dispatch_emails.return_value = None
+    with patch.object(mock_converter, 'initialize', new_callable=AsyncMock, return_value=True), \
+         patch('main.alert_on_failures'):
+        assert await mock_converter.process_content(upload_to_remarkable=False) is False
+    assert any(f["category"] == "scan" for f in mock_converter.failures)

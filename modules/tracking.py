@@ -6,10 +6,35 @@ Tracking manager for duplicate detection and processing history
 import json
 import hashlib
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import TRACKING_FILE, MIN_PDF_SIZE_BYTES
+from config.settings import TRACKING_FILE, MIN_PDF_SIZE_BYTES, PRUNE_NEWS_DAYS
+
+
+def _entry_timestamp(entry):
+    """When this item was produced: processed_date, else the PDF's mtime, else None."""
+    pd = entry.get('processed_date')
+    if pd:
+        try:
+            return datetime.fromisoformat(pd).timestamp()
+        except ValueError:
+            pass
+    pp = entry.get('pdf_path')
+    if pp and os.path.exists(pp):
+        return os.path.getmtime(pp)
+    return None
+
+
+def entry_is_stale(entry, days, now=None):
+    """True if the item is older than `days`. Stale pending uploads are not worth
+    delivering (the device prune would remove them within a run) and must not keep
+    'done' hostage to a local file forever."""
+    ts = _entry_timestamp(entry)
+    if ts is None:
+        return False
+    now_ts = (now or datetime.now(timezone.utc)).timestamp()
+    return ts <= now_ts - days * 86400
 
 
 class TrackingManager:
@@ -184,7 +209,15 @@ class TrackingManager:
         if pdf_path and os.path.exists(pdf_path):
             return True
 
-        # PDF is gone and was never uploaded — allow re-processing
+        # PDF is gone and was never uploaded. Recent: re-gather (regenerate +
+        # upload is the right recovery). Older than the prune window: not worth
+        # it — mark expired so it's never re-gathered and nothing depends on the file.
+        if entry_is_stale(processed_info, PRUNE_NEWS_DAYS):
+            print(f"🧹 PDF missing, never uploaded, older than {PRUNE_NEWS_DAYS}d — marking expired: {pdf_path}")
+            processed_info['remarkable_expired'] = True
+            processed_info['abandoned'] = 'pdf missing past prune window'
+            self.save_tracking_data()
+            return True
         print(f"🔄 PDF missing and not uploaded to reMarkable, will re-process: {pdf_path}")
         del self.processed_emails[fingerprint]
         self.save_tracking_data()
@@ -257,6 +290,7 @@ class TrackingManager:
         """Remove tracking entries for PDFs that no longer exist or failed conversions"""
         cleaned_count = 0
         to_remove = []
+        marked_expired = 0
 
         for fingerprint, data in self.processed_emails.items():
             # Never remove entries pruned from reMarkable — they block re-gathering
@@ -273,8 +307,14 @@ class TrackingManager:
                 # Not yet uploaded — remove if PDF is missing (will be re-processed)
                 pdf_path = data.get('pdf_path', '')
                 if pdf_path and not os.path.exists(pdf_path):
-                    print(f"🧹 Removing missing PDF (not uploaded): {pdf_path}")
-                    should_remove = True
+                    if entry_is_stale(data, PRUNE_NEWS_DAYS):
+                        # Too old to re-gather: remember it as done instead of dropping it
+                        data['remarkable_expired'] = True
+                        data['abandoned'] = 'pdf missing past prune window'
+                        marked_expired += 1
+                    else:
+                        print(f"🧹 Removing missing PDF (not uploaded): {pdf_path}")
+                        should_remove = True
             # If remarkable_uploaded=True, keep the entry regardless of local PDF
 
             if should_remove:
@@ -284,8 +324,11 @@ class TrackingManager:
         for fingerprint in to_remove:
             del self.processed_emails[fingerprint]
 
+        if marked_expired:
+            print(f"🧹 Marked {marked_expired} stale never-uploaded entries expired (won't re-gather)")
         if cleaned_count > 0:
             print(f"🧹 Cleaned up {cleaned_count} invalid tracking entries")
+        if cleaned_count or marked_expired:
             self.save_tracking_data()
 
         return cleaned_count

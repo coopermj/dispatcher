@@ -33,6 +33,9 @@ WORKAROUNDS = {
              "If the client self-updated, the previous binary is ~/rmapi/rmapi.prev",
     "auth": "Dispatch cookies expired: run ./refresh_tokens_mac.sh on the Mac (logs in, copies "
             "tokens to the box). Google token: run `.venv/bin/python main.py` interactively to re-consent",
+    "disk": "Free space on the box: `du -sh ~/dispatchweb/dispatch_pdfs ~/dispatchweb/dispatch_persistent_pdfs "
+            "~/.cache/ms-playwright`; stale pending uploads are abandoned automatically after PRUNE_NEWS_DAYS, "
+            "so a full disk means something else is growing",
     "scan": "Check debug_html/ for the latest snapshot — the site may be blocking the "
             "scraper or the Dispatch cookies expired; re-run .venv/bin/python main.py interactively",
 }

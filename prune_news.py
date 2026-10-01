@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 
 from config.settings import DEFAULT_RMAPI_PATH, REMARKABLE_FOLDER, PRUNE_NEWS_DAYS
@@ -122,6 +123,47 @@ def run_local_prune(days, pdf_dirs=None):
     if deleted:
         print(f"🧹 Deleted {deleted} old local PDF(s) already settled on the device")
     return deleted
+
+
+def abandon_stale_pending(days, tracking_files=None, now=None):
+    """Pending uploads older than `days` are never worth delivering (the device
+    prune would drop them within a run): mark them remarkable_expired — never
+    re-gathered, never retried — and delete their local PDFs so the disk is
+    freed. Without this, one rmapi outage left 1.8 GB of PDFs that nothing
+    could ever prune. Returns the count abandoned; never raises."""
+    from modules.tracking import entry_is_stale
+    abandoned = 0
+    for tf in (tracking_files or TRACKING_FILES):
+        data = load_json(tf)
+        if not data:
+            continue
+        changed = False
+        for entry in data.values():
+            if entry.get("remarkable_uploaded") or entry.get("remarkable_expired"):
+                continue
+            if not entry_is_stale(entry, days, now=now):
+                continue
+            entry["remarkable_expired"] = True
+            entry["abandoned"] = f"pending upload older than {days}d"
+            pp = entry.get("pdf_path")
+            if pp and os.path.exists(pp):
+                try:
+                    os.unlink(pp)
+                except OSError as e:
+                    print(f"   ⚠️ could not delete {pp}: {e}")
+            abandoned += 1
+            changed = True
+        if changed:
+            save_json(tf, data)
+    if abandoned:
+        print(f"🧹 Abandoned {abandoned} stale pending upload(s) (older than {days}d) and removed their PDFs")
+    return abandoned
+
+
+def check_disk_free(path):
+    """Free space in GB on the volume holding `path`."""
+    import shutil
+    return shutil.disk_usage(str(path)).free / 1e9
 
 
 def run_debug_prune(days, debug_dir=None):

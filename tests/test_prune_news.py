@@ -163,3 +163,57 @@ def test_debug_prune_removes_old_snapshots_and_temp_dirs_only(tmp_path):
 def test_debug_prune_missing_dir_is_noop(tmp_path):
     from prune_news import run_debug_prune
     assert run_debug_prune(days=10, debug_dir=tmp_path / "nope") == 0
+
+
+# ---------------------------------------------------------------------------
+# Disk hygiene: pending uploads must not pile up forever, and "done" must not
+# depend on a local file for anything older than the prune window.
+# ---------------------------------------------------------------------------
+import json
+from datetime import timedelta
+
+
+def _tracking(tmp_path, entries):
+    tf = tmp_path / "dispatch_tracking.json"
+    data = {}
+    for i, (name, days_old, status) in enumerate(entries):
+        pdf = tmp_path / f"{name}.pdf"; pdf.write_bytes(b"x" * 10)
+        data[f"fp{i}"] = {"subject": name, "pdf_path": str(pdf), "success": True,
+                          "processed_date": (NOW - timedelta(days=days_old)).isoformat(),
+                          "remarkable_uploaded": status == "uploaded",
+                          **({"remarkable_expired": True} if status == "expired" else {})}
+    tf.write_text(json.dumps(data))
+    return tf
+
+
+def test_abandon_stale_pending_marks_expired_and_deletes_pdf(tmp_path):
+    from prune_news import abandon_stale_pending
+    tf = _tracking(tmp_path, [("stale-pending", 20, "pending"), ("fresh-pending", 3, "pending"),
+                              ("old-uploaded", 20, "uploaded")])
+
+    n = abandon_stale_pending(days=10, tracking_files=[tf], now=NOW)
+
+    data = json.loads(tf.read_text())
+    by = {e["subject"]: e for e in data.values()}
+    assert n == 1
+    assert by["stale-pending"]["remarkable_expired"] is True
+    assert not (tmp_path / "stale-pending.pdf").exists()
+    assert "remarkable_expired" not in by["fresh-pending"] and (tmp_path / "fresh-pending.pdf").exists()
+    assert "remarkable_expired" not in by["old-uploaded"] and (tmp_path / "old-uploaded.pdf").exists()
+
+
+def test_abandon_stale_pending_without_date_uses_pdf_mtime(tmp_path):
+    from prune_news import abandon_stale_pending
+    tf = _tracking(tmp_path, [("undated", 0, "pending")])
+    data = json.loads(tf.read_text()); next(iter(data.values())).pop("processed_date"); tf.write_text(json.dumps(data))
+    _age(tmp_path / "undated.pdf", 30)
+    assert abandon_stale_pending(days=10, tracking_files=[tf]) == 1
+
+
+def test_check_disk_free_reports_gb(tmp_path):
+    from unittest.mock import patch
+    from collections import namedtuple
+    from prune_news import check_disk_free
+    usage = namedtuple("usage", "total used free")
+    with patch("shutil.disk_usage", return_value=usage(100e9, 98.5e9, 1.5e9)):
+        assert round(check_disk_free(tmp_path), 1) == 1.5

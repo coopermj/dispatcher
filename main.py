@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Import modules
 from modules import (
-    AuthManager, EmailHandler, BrowserManager, 
+    AuthManager, EmailHandler, BrowserManager,
     TrackingManager, ReMarkableManager, WebsiteScanner, LinkProcessor
 )
 from modules.utils import (
@@ -30,7 +30,8 @@ from config.settings import (
     OUTPUT_DIR, DEFAULT_MAX_EMAILS, DEFAULT_FORCE_REPROCESS,
     DEFAULT_UPLOAD_TO_REMARKABLE, SLEEP_BETWEEN_CONVERSIONS,
     DEFAULT_RMAPI_PATH, PROCESSING_MODE, MAX_ARTICLES, FOLLOW_ARTICLE_LINKS,
-    MAX_CONCURRENT_CONVERSIONS, PRUNE_NEWS_ENABLED, PRUNE_NEWS_DAYS
+    MAX_CONCURRENT_CONVERSIONS, PRUNE_NEWS_ENABLED, PRUNE_NEWS_DAYS,
+    DISPATCH_EMAIL_TRACKING_FILE, RETRY_UPLOADS_PER_RUN, DISK_FREE_MIN_GB
 )
 from email_converter import run_email_converter
 
@@ -62,7 +63,7 @@ async def _run_email_pipeline():
 
 class DispatchConverter:
     """Main application class that orchestrates all modules"""
-    
+
     def __init__(self, rmapi_path=None, output_dir=None):
         # Initialize all managers
         self.auth_manager = AuthManager()
@@ -76,7 +77,7 @@ class DispatchConverter:
         self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
         self.processing_mode = PROCESSING_MODE
-        
+
         # Statistics
         self.stats = {
             'total_emails': 0,
@@ -93,7 +94,7 @@ class DispatchConverter:
             'total_linked_pages': 0,
             'follow_links_enabled': FOLLOW_ARTICLE_LINKS
         }
-    
+
     def print_startup_banner(self):
         """Print application startup banner"""
         print("🚀 THE DISPATCH PDF CONVERTER - MODULAR VERSION")
@@ -111,10 +112,10 @@ class DispatchConverter:
         print("• Keeps the browser open throughout the entire process")
         print("• Uploads PDFs to ReMarkable News folder using rmapi")
         print("• Shows tracking summary and recently processed content")
-        
+
         if FOLLOW_ARTICLE_LINKS:
             print("• 🔗 Link following enabled: Creates multi-page PDFs with referenced content")
-        
+
         if self.processing_mode == 'email':
             print("\n📧 EMAIL MODE - Processing steps:")
             print("1. Load configuration from .env file")
@@ -137,7 +138,7 @@ class DispatchConverter:
                 print("6. Convert article URLs to PDFs (with linked content)")
             else:
                 print("6. Convert article URLs to PDFs")
-        
+
         print("7. Upload PDFs to ReMarkable (if enabled)")
         print("8. Update tracking database")
         print("9. Generate summary report")
@@ -155,7 +156,7 @@ class DispatchConverter:
     async def initialize(self):
         """Initialize all components"""
         print("\n🔧 Initializing components...")
-        
+
         # Every failure here is recorded so the caller can alert on it — an
         # expired login on the headless box must not look like a clean run.
         # Check dependencies
@@ -196,7 +197,7 @@ class DispatchConverter:
                            "login failed (cookies expired?)")
             await self.browser_manager.close_browser_session()
             return False
-        
+
         print("✅ All components initialized successfully")
         return True
 
@@ -207,15 +208,15 @@ class DispatchConverter:
             max_items = max_items or DEFAULT_MAX_EMAILS
         else:
             max_items = max_items or MAX_ARTICLES
-            
+
         force_reprocess = force_reprocess if force_reprocess is not None else DEFAULT_FORCE_REPROCESS
         upload_to_remarkable = upload_to_remarkable if upload_to_remarkable is not None else DEFAULT_UPLOAD_TO_REMARKABLE
-        
+
         # Update stats
         self.stats['remarkable_enabled'] = upload_to_remarkable
-        
+
         start_time = time.time()
-        
+
         try:
             # Initialize all components
             if not await self.initialize():
@@ -231,7 +232,18 @@ class DispatchConverter:
             else:
                 content_list = await self.get_website_content(max_items)
 
+            if content_list is None:
+                print(f"❌ {self.processing_mode} search failed")
+                record_failure(self.failures, "scan", f"{self.processing_mode} search",
+                               "search failed — see log")
+                alert_on_failures(self.failures,
+                                  run_label=f"{self.processing_mode} pipeline")
+                return False
+
             if not content_list:
+                if self.processing_mode == 'email':
+                    print("ℹ️  No new Dispatch emails in the search window — nothing to do")
+                    return True
                 # Distinguish "nothing new" from "blocked or logged out". The
                 # scanner reports how many links it saw before filtering: if it
                 # saw plenty and every one was already processed (a quiet Sunday
@@ -250,22 +262,22 @@ class DispatchConverter:
                 alert_on_failures(self.failures,
                                   run_label=f"{self.processing_mode} pipeline")
                 return False
-            
+
             # Filter content if not force reprocessing
             if not force_reprocess:
                 original_count = len(content_list)
                 content_list = [
-                    content for content in content_list 
+                    content for content in content_list
                     if not self.tracking_manager.is_email_processed(content)
                 ]
                 skipped_count = original_count - len(content_list)
                 if skipped_count > 0:
                     print(f"⏭️  {skipped_count} items already processed (use force_reprocess=True to override)")
-            
+
             if not content_list:
                 print("✅ All content has been processed already!")
                 return True
-            
+
             print(f"\n🔄 Converting {len(content_list)} items to PDF...")
             print(f"⚡ Using parallel processing with up to {MAX_CONCURRENT_CONVERSIONS} concurrent conversions")
 
@@ -276,12 +288,28 @@ class DispatchConverter:
 
             # Process items in parallel with concurrency limit
             await self.process_items_parallel(content_list)
-            
+
             # Calculate processing time
             self.stats['processing_time'] = time.time() - start_time
 
             # Print final summary
             self.print_final_summary()
+
+            # Re-try uploads that failed in earlier runs. An rmapi outage used to
+            # leave PDFs "pending" forever (nothing retried them automatically, and
+            # the local prune keeps pending files). Bounded per run.
+            if upload_to_remarkable and self.remarkable_manager.is_available():
+                try:
+                    retried, succeeded = await asyncio.to_thread(
+                        self.retry_failed_uploads,
+                        max_items=RETRY_UPLOADS_PER_RUN, max_age_days=PRUNE_NEWS_DAYS)
+                    if retried and succeeded < retried:
+                        record_failure(self.failures, "upload",
+                                       f"{retried - succeeded} pending upload(s)",
+                                       "still failing on automatic retry")
+                except Exception as e:
+                    print(f"⚠️ Upload retry step failed (run continues): {e}")
+                    record_failure(self.failures, "upload", "retry step", str(e))
 
             # Prune old unstarred docs from the device so News doesn't grow
             # without bound. Never lets a prune problem fail the run.
@@ -301,9 +329,12 @@ class DispatchConverter:
                     print(f"⚠️ Prune step failed (run continues): {e}")
                     record_failure(self.failures, "prune", "prune step", str(e))
 
-                # Local disk hygiene: drop PDFs whose device fate is settled
+                # Local disk hygiene: give up on pending uploads older than the
+                # prune window (they'd be pruned from the device within a run
+                # anyway), then drop PDFs whose device fate is settled.
                 try:
-                    from prune_news import run_local_prune
+                    from prune_news import abandon_stale_pending, run_local_prune
+                    await asyncio.to_thread(abandon_stale_pending, PRUNE_NEWS_DAYS)
                     await asyncio.to_thread(run_local_prune, days=PRUNE_NEWS_DAYS)
                 except Exception as e:
                     print(f"⚠️ Local PDF cleanup failed (run continues): {e}")
@@ -318,6 +349,17 @@ class DispatchConverter:
                 except Exception as e:
                     print(f"⚠️ Debug snapshot cleanup failed (run continues): {e}")
 
+            # Disk floor: hear about it before conversions start failing with ENOSPC
+            try:
+                from prune_news import check_disk_free
+                free_gb = await asyncio.to_thread(check_disk_free, self.output_dir)
+                if free_gb < DISK_FREE_MIN_GB:
+                    print(f"⚠️ Low disk: {free_gb:.1f} GB free (floor {DISK_FREE_MIN_GB} GB)")
+                    record_failure(self.failures, "disk", f"{free_gb:.1f} GB free",
+                                   f"below the {DISK_FREE_MIN_GB} GB floor")
+            except Exception as e:
+                print(f"⚠️ Disk check failed (run continues): {e}")
+
             alert_on_failures(self.failures,
                               run_label=f"{self.processing_mode} pipeline")
             return True
@@ -329,7 +371,7 @@ class DispatchConverter:
             alert_on_failures(self.failures,
                               run_label=f"{self.processing_mode} pipeline")
             return False
-        
+
         finally:
             # Always close browser session
             await self.browser_manager.close_browser_session()
@@ -338,12 +380,14 @@ class DispatchConverter:
         """Get email content to process"""
         print(f"\n🔍 Searching for up to {max_emails} emails from The Dispatch...")
         messages = self.email_handler.search_dispatch_emails(max_emails)
-        
+
+        if messages is None:
+            return None  # search failed — caller alerts
         if not messages:
-            return []
-        
+            return []    # genuinely nothing new (quiet day)
+
         self.stats['total_emails'] = len(messages)
-        
+
         # Process email list to extract data
         print(f"\n📧 Processing {len(messages)} emails...")
         return self.email_handler.process_email_list(messages)
@@ -351,13 +395,13 @@ class DispatchConverter:
     async def get_website_content(self, max_articles):
         """Get website content to process"""
         print(f"\n🔍 Scanning website for up to {max_articles} articles...")
-        
+
         articles = await self.website_scanner.scan_for_articles(max_articles)
         self.stats['total_articles'] = len(articles)
-        
+
         if articles:
             self.website_scanner.print_articles_summary()
-        
+
         # Convert articles to format compatible with email processing
         content_list = []
         for article in articles:
@@ -527,33 +571,33 @@ class DispatchConverter:
         if self.processing_mode != 'email':
             print("⚠️ process_emails() called but processing mode is not 'email'")
             print(f"Current mode: {self.processing_mode}")
-            
+
         return await self.process_content(max_emails, force_reprocess, upload_to_remarkable)
 
     def print_final_summary(self):
         """Print final processing summary"""
         mode_name = "Email" if self.processing_mode == 'email' else "Website"
         print(f"\n🎉 {mode_name} processing complete!")
-        
+
         # Generate and print summary report
         report = create_summary_report(self.stats)
         print(report)
-        
+
         # Show tracking summary
         self.tracking_manager.print_tracking_summary()
-        
+
         # ReMarkable status
         if self.stats['remarkable_enabled']:
             self.remarkable_manager.print_status()
-        
+
         # Recommendations
         print("\n💡 Next steps:")
         if self.stats['successful_conversions'] > 0:
             print(f"📁 Check '{self.output_dir}' for your PDF files")
-        
+
         if self.stats['remarkable_uploads'] > 0:
             print("📱 Check your ReMarkable's 'News' folder for uploaded files")
-        
+
         if self.stats['failed_conversions'] > 0:
             print("🔧 Check debug_html/ folder for snapshots of failed conversions")
 
@@ -590,27 +634,40 @@ class DispatchConverter:
             effective_mode='website'
         )
 
-    def retry_failed_uploads(self):
-        """Upload PDFs that were converted but never made it to reMarkable."""
+    def retry_failed_uploads(self, max_items=None, max_age_days=None):
+        """Upload PDFs that were converted but never made it to reMarkable.
+
+        `max_items` bounds the work per call (the automatic per-run retry);
+        entries older than `max_age_days` are skipped — abandon_stale_pending()
+        retires those. Returns (retried, succeeded)."""
+        from modules.tracking import entry_is_stale
         if not self.remarkable_manager.is_available():
             print("❌ ReMarkable not available — cannot retry uploads")
-            return
+            return (0, 0)
 
         retried = 0
         succeeded = 0
-
         project_root = Path(__file__).parent
 
-        # --- Modular tracking file (dispatch_tracking.json) ---
-        for fingerprint, entry in list(self.tracking_manager.processed_emails.items()):
-            if entry.get('remarkable_uploaded'):
-                continue
-            if entry.get('remarkable_expired'):
-                continue
+        def eligible(entry):
+            if entry.get('remarkable_uploaded') or entry.get('remarkable_expired'):
+                return None
+            if max_age_days is not None and entry_is_stale(entry, max_age_days):
+                return None
             pdf_path = Path(entry.get('pdf_path', ''))
             if not pdf_path.is_absolute():
                 pdf_path = project_root / pdf_path
-            if not pdf_path.exists():
+            return pdf_path if pdf_path.exists() else None
+
+        def budget_left():
+            return max_items is None or retried < max_items
+
+        # --- Modular tracking file (dispatch_tracking.json) ---
+        for fingerprint, entry in list(self.tracking_manager.processed_emails.items()):
+            if not budget_left():
+                break
+            pdf_path = eligible(entry)
+            if pdf_path is None:
                 continue
             print(f"\n📤 Retrying upload: {entry.get('subject', '')[:60]}")
             retried += 1
@@ -621,22 +678,18 @@ class DispatchConverter:
         if retried:
             self.tracking_manager.save_tracking_data()
 
-        # --- Email converter tracking file (dispatch_email_tracking.json) ---
-        email_tracking_path = Path(__file__).parent / 'dispatch_email_tracking.json'
+        # --- Email converter tracking file ---
+        email_tracking_path = Path(DISPATCH_EMAIL_TRACKING_FILE)
         if email_tracking_path.exists():
             with open(email_tracking_path, 'r') as f:
                 email_tracking = json.load(f)
 
             email_retried = 0
             for fingerprint, entry in email_tracking.items():
-                if entry.get('remarkable_uploaded'):
-                    continue
-                if entry.get('remarkable_expired'):
-                    continue
-                pdf_path = Path(entry.get('pdf_path', ''))
-                if not pdf_path.is_absolute():
-                    pdf_path = project_root / pdf_path
-                if not pdf_path.exists():
+                if not budget_left():
+                    break
+                pdf_path = eligible(entry)
+                if pdf_path is None:
                     continue
                 print(f"\n📤 Retrying email upload: {entry.get('subject', '')[:60]}")
                 email_retried += 1
@@ -650,7 +703,9 @@ class DispatchConverter:
                 with open(email_tracking_path, 'w') as f:
                     json.dump(email_tracking, f, indent=2)
 
-        print(f"\n✅ Retry complete: {succeeded}/{retried} uploaded successfully")
+        if retried:
+            print(f"\n✅ Retry complete: {succeeded}/{retried} uploaded successfully")
+        return (retried, succeeded)
 
     async def cleanup(self):
         """Cleanup resources"""
