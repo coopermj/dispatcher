@@ -124,6 +124,7 @@ class DispatchPersistentConverter:
             success_count = 0
             uploaded_count = 0
             skipped_count = 0
+            failed_count = 0
 
             for i, message in enumerate(messages, 1):
                 print(f"\n📄 Processing email {i}/{len(messages)}...")
@@ -177,9 +178,24 @@ class DispatchPersistentConverter:
                     )
                 if not success:
                     print("❌ Failed to convert")
+                    failed_count += 1
                     record_failure(self.failures, "conversion",
                                    email_data.get('subject', 'unknown email'),
                                    "PDF conversion failed")
+                    continue
+
+                # Validate + record in tracking BEFORE uploading. mark_email_processed
+                # rejects missing/undersized PDFs (paywall stubs); a rejected PDF must
+                # never reach the device, where inventory dedup would then block the
+                # real newsletter for good.
+                if not self.tracking_manager.mark_email_processed(
+                    email_data, filename, remarkable_uploaded=False, success=True
+                ):
+                    print(f"❌ PDF failed validation, not uploading: {filename}")
+                    failed_count += 1
+                    record_failure(self.failures, "conversion",
+                                   email_data.get('subject', 'unknown email'),
+                                   "PDF failed validation (missing or too small)")
                     continue
 
                 success_count += 1
@@ -196,9 +212,9 @@ class DispatchPersistentConverter:
                         record_failure(self.failures, "upload", Path(filename).name,
                                        "upload_if_new failed (see log)")
 
-                if self.tracking_manager.mark_email_processed(
-                    email_data, filename, remarkable_uploaded, success=True
-                ):
+                if remarkable_uploaded:
+                    self.tracking_manager.update_remarkable_status(email_data, True)  # saves
+                else:
                     self.tracking_manager.save_tracking_data()
 
                 await asyncio.sleep(1)
@@ -206,6 +222,7 @@ class DispatchPersistentConverter:
             print("\n🎉 Email conversion complete!")
             print(f"✅ Successfully converted: {success_count}/{len(messages)} emails")
             print(f"⏭️  Skipped (already processed): {skipped_count}/{len(messages)} emails")
+            print(f"❌ Failed: {failed_count}/{len(messages)} emails")
             print(f"📁 Check the '{output_dir}' directory for PDFs")
             if upload_to_remarkable:
                 print(f"📤 Uploaded to ReMarkable: {uploaded_count}/{success_count} PDFs")
