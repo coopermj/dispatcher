@@ -107,6 +107,12 @@ SKIP_LINK_PATTERNS = [p.strip() for p in os.getenv('SKIP_LINK_PATTERNS',
                                                    'twitter.com,facebook.com,youtube.com,instagram.com,linkedin.com,mailto:').split(
     ',') if p.strip()]
 LINKED_PAGE_TIMEOUT = get_int_env('LINKED_PAGE_TIMEOUT', 15)
+# Hard budget for ONE linked-page capture (goto + cleanup + pdf). Playwright's
+# set_content()/pdf() carry no timeout, so a wedged renderer (seen on a Cloudflare
+# CAPTCHA page, 2026-10-03) otherwise stalls the whole run until the 4h kill.
+LINKED_PAGE_HARD_TIMEOUT = get_int_env('LINKED_PAGE_HARD_TIMEOUT', 120)
+# Bound on a single page.pdf() render of the article itself (same hang class).
+PDF_RENDER_TIMEOUT = get_int_env('PDF_RENDER_TIMEOUT', 120)
 REPLACE_LINKS_WITH_PDF_REFS = get_bool_env('REPLACE_LINKS_WITH_PDF_REFS', True)
 
 # Parallel processing settings

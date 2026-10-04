@@ -16,6 +16,7 @@ from modules.blocked_detection import detect_block, placeholder_html
 from config.settings import (
     FOLLOW_ARTICLE_LINKS, MAX_LINKED_PAGES, LINK_FOLLOW_DEPTH,
     ALLOWED_LINK_DOMAINS, SKIP_LINK_PATTERNS, LINKED_PAGE_TIMEOUT,
+    LINKED_PAGE_HARD_TIMEOUT, PDF_RENDER_TIMEOUT,
     DEBUG_DIR, SKIP_DOMAINS, MAX_CONCURRENT_LINKS, MIN_PDF_SIZE_BYTES
 )
 
@@ -34,6 +35,11 @@ PRINT_FLOW_FIX_JS = """
     }
 }
 """
+
+
+# A placeholder is rendered on a FRESH tab after a capture times out; if that tab
+# also stops answering, give up on the page rather than wait.
+PLACEHOLDER_RENDER_TIMEOUT = 20
 
 
 class LinkProcessor:
@@ -163,13 +169,13 @@ class LinkProcessor:
 
             # Generate PDF directly from current page state (don't re-navigate)
             print(f"📄 Generating PDF: {main_pdf}")
-            await self._active_page.pdf(
+            await asyncio.wait_for(self._active_page.pdf(
                 path=str(main_pdf),
                 format='A4',
                 margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
                 print_background=True,
                 prefer_css_page_size=False
-            )
+            ), timeout=PDF_RENDER_TIMEOUT)
 
             # Check if PDF was created successfully
             import os
@@ -659,63 +665,107 @@ class LinkProcessor:
 
     async def _capture_one(self, target, index, temp_dir):
         """Capture one linked page to PDF; insert a placeholder page if the
-        page is blocked (captcha/HTTP error/timeout/too-small render)."""
+        page is blocked (captcha/HTTP error/timeout/too-small render).
+
+        The whole capture is hard-bounded by LINKED_PAGE_HARD_TIMEOUT. Only
+        goto() has its own timeout; set_content()/pdf()/evaluate() do not, and
+        a renderer wedged on a bot-challenge page once held gather() — and the
+        run — for four hours. On timeout the tab is abandoned and a placeholder
+        is rendered on a fresh one.
+        """
         page = await self.browser_manager.create_new_page()
         if not page:
             return None
-        reason = None
         title = target.link_text or target.url
-        child_links = []
         pdf_path = temp_dir / f"linked_{index:03d}_{self.sanitize_filename(title)}.pdf"
         try:
-            try:
-                response = await page.goto(target.url,
-                                           timeout=LINKED_PAGE_TIMEOUT * 1000,
-                                           wait_until='domcontentloaded')
-                await asyncio.sleep(2)
-                status = response.status if response else None
-                page_title = await page.title()
-                if page_title:
-                    title = page_title
-                body_text = await page.evaluate(
-                    "() => document.body ? document.body.innerText.slice(0, 3000) : ''")
-                reason = detect_block(title, body_text, status)
-            except Exception as e:
-                reason = f"navigation failed ({type(e).__name__})"
+            return await asyncio.wait_for(
+                self._capture_on_page(page, target, index, pdf_path, title),
+                timeout=LINKED_PAGE_HARD_TIMEOUT)
+        except asyncio.TimeoutError:
+            reason = f"capture timed out after {LINKED_PAGE_HARD_TIMEOUT}s (renderer stopped answering)"
+            print(f"  ⏰ {target.url}: {reason} — inserting placeholder page")
+            return await self._placeholder_section(target, index, pdf_path, title, reason)
+        except Exception as e:
+            print(f"  ❌ Error capturing {target.url}: {e}")
+            return None
+        finally:
+            await self.browser_manager.close_page(page)
 
-            if reason is None:
-                if target.depth < LINK_FOLLOW_DEPTH:
-                    # Extract child links for the next BFS level while the DOM is live
-                    content = await page.content()
-                    soup = BeautifulSoup(content, 'html.parser')
-                    child_links = self.extract_links(soup, target.url)
+    async def _capture_on_page(self, page, target, index, pdf_path, title):
+        """The unbounded capture body; _capture_one() applies the time budget."""
+        reason = None
+        child_links = []
+        try:
+            response = await page.goto(target.url,
+                                       timeout=LINKED_PAGE_TIMEOUT * 1000,
+                                       wait_until='domcontentloaded')
+            await asyncio.sleep(2)
+            status = response.status if response else None
+            page_title = await page.title()
+            if page_title:
+                title = page_title
+            body_text = await page.evaluate(
+                "() => document.body ? document.body.innerText.slice(0, 3000) : ''")
+            reason = detect_block(title, body_text, status)
+        except Exception as e:
+            reason = f"navigation failed ({type(e).__name__})"
 
-                await self.browser_manager.remove_header_elements_from_page(page)
-                # Some sites (e.g. CNN) scroll content in an inner wrapper and set
-                # overflow:hidden on <html>/<body>. Chromium's print pagination then
-                # clips to one viewport and repeats it on every page. Force
-                # document-level flow so the full article paginates normally.
-                await page.evaluate(PRINT_FLOW_FIX_JS)
-                await page.pdf(
-                    path=str(pdf_path),
-                    format='A4',
-                    margin={'top': '0.75in', 'right': '0.75in',
-                            'bottom': '0.75in', 'left': '0.75in'},
-                    print_background=True,
-                    prefer_css_page_size=False
-                )
-                if not pdf_path.exists() or pdf_path.stat().st_size < 10000:
-                    reason = "rendered PDF too small (likely an error page)"
-                    child_links = []
+        if reason is None:
+            if target.depth < LINK_FOLLOW_DEPTH:
+                # Extract child links for the next BFS level while the DOM is live
+                content = await page.content()
+                soup = BeautifulSoup(content, 'html.parser')
+                child_links = self.extract_links(soup, target.url)
 
-            if reason is not None:
-                print(f"  ⚠️ {target.url}: {reason} — inserting placeholder page")
+            await self.browser_manager.remove_header_elements_from_page(page)
+            # Some sites (e.g. CNN) scroll content in an inner wrapper and set
+            # overflow:hidden on <html>/<body>. Chromium's print pagination then
+            # clips to one viewport and repeats it on every page. Force
+            # document-level flow so the full article paginates normally.
+            await page.evaluate(PRINT_FLOW_FIX_JS)
+            await page.pdf(
+                path=str(pdf_path),
+                format='A4',
+                margin={'top': '0.75in', 'right': '0.75in',
+                        'bottom': '0.75in', 'left': '0.75in'},
+                print_background=True,
+                prefer_css_page_size=False
+            )
+            if not pdf_path.exists() or pdf_path.stat().st_size < 10000:
+                reason = "rendered PDF too small (likely an error page)"
+                child_links = []
+
+        if reason is not None:
+            print(f"  ⚠️ {target.url}: {reason} — inserting placeholder page")
+            await page.set_content(placeholder_html(target.url, title, reason))
+            await page.pdf(path=str(pdf_path), format='A4',
+                           print_background=True)
+
+        print(f"  ✅ [{index}] depth {target.depth}: {title[:50]}"
+              f"{' (placeholder)' if reason else ''}")
+        return {
+            'url': target.url,
+            'title': title,
+            'pdf': str(pdf_path),
+            'depth': target.depth,
+            'parent_url': target.parent_url,
+            'blocked': reason,
+            'child_links': child_links,
+        }
+
+    async def _placeholder_section(self, target, index, pdf_path, title, reason):
+        """Render the 'could not capture' page on a fresh tab (the original is
+        presumed wedged), itself time-bounded. Returns a section dict or None."""
+        page = await self.browser_manager.create_new_page()
+        if not page:
+            return None
+        try:
+            async def render():
                 await page.set_content(placeholder_html(target.url, title, reason))
-                await page.pdf(path=str(pdf_path), format='A4',
-                               print_background=True)
-
-            print(f"  ✅ [{index}] depth {target.depth}: {title[:50]}"
-                  f"{' (placeholder)' if reason else ''}")
+                await page.pdf(path=str(pdf_path), format='A4', print_background=True)
+            await asyncio.wait_for(render(), timeout=PLACEHOLDER_RENDER_TIMEOUT)
+            print(f"  ✅ [{index}] depth {target.depth}: {title[:50]} (placeholder)")
             return {
                 'url': target.url,
                 'title': title,
@@ -723,10 +773,10 @@ class LinkProcessor:
                 'depth': target.depth,
                 'parent_url': target.parent_url,
                 'blocked': reason,
-                'child_links': child_links,
+                'child_links': [],
             }
         except Exception as e:
-            print(f"  ❌ Error capturing {target.url}: {e}")
+            print(f"  ❌ Dropped {target.url}: placeholder render failed ({type(e).__name__})")
             return None
         finally:
             await self.browser_manager.close_page(page)

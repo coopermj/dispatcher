@@ -12,7 +12,7 @@ from pathlib import Path
 from config.settings import (
     BROWSER_USER_AGENT, BROWSER_HEADLESS, BROWSER_TIMEOUT,
     PDF_FORMAT, PDF_MARGINS, CONTENT_SELECTORS, HEADER_REMOVAL_KEYWORDS,
-    DEBUG_DIR, CONTENT_LOAD_WAIT, MIN_PDF_SIZE_BYTES
+    DEBUG_DIR, CONTENT_LOAD_WAIT, MIN_PDF_SIZE_BYTES, PDF_RENDER_TIMEOUT
 )
 
 
@@ -495,13 +495,14 @@ class BrowserManager:
 
             # Generate PDF
             print(f"📄 Generating PDF: {output_filename}")
-            await use_page.pdf(
+            # page.pdf() has no timeout of its own; a wedged renderer would hang here
+            await asyncio.wait_for(use_page.pdf(
                 path=output_filename,
                 format='A4',
                 margin={'top': '0.75in', 'right': '0.75in', 'bottom': '0.75in', 'left': '0.75in'},
                 print_background=True,
                 prefer_css_page_size=False
-            )
+            ), timeout=PDF_RENDER_TIMEOUT)
 
             # Verify PDF was created
             if os.path.exists(output_filename) and os.path.getsize(output_filename) >= MIN_PDF_SIZE_BYTES:
