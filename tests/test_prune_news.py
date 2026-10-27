@@ -217,3 +217,61 @@ def test_check_disk_free_reports_gb(tmp_path):
     usage = namedtuple("usage", "total used free")
     with patch("shutil.disk_usage", return_value=usage(100e9, 98.5e9, 1.5e9)):
         assert round(check_disk_free(tmp_path), 1) == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Playwright browser-cache prune: drop builds the installed Playwright no
+# longer references (left behind by upgrades), keep everything it does.
+# ---------------------------------------------------------------------------
+
+def _fake_playwright_cache(tmp_path):
+    cache = tmp_path / "ms-playwright"
+    for d in ("chromium-1234", "chromium_headless_shell-1234", "ffmpeg-1011",
+              "chromium-1200", "chromium_headless_shell-1200", "ffmpeg-1009",
+              ".links"):
+        (cache / d).mkdir(parents=True)
+        (cache / d / "payload").write_bytes(b"x" * 10)
+    manifest = tmp_path / "browsers.json"
+    manifest.write_text(json.dumps({"browsers": [
+        {"name": "chromium", "revision": "1234", "installByDefault": True},
+        {"name": "chromium-headless-shell", "revision": "1234", "installByDefault": True},
+        {"name": "firefox", "revision": "1538", "installByDefault": True},
+        {"name": "ffmpeg", "revision": "1011", "installByDefault": True},
+    ]}))
+    return cache, manifest
+
+
+def test_playwright_prune_removes_only_unreferenced_builds(tmp_path):
+    from prune_news import run_playwright_prune
+    cache, manifest = _fake_playwright_cache(tmp_path)
+
+    removed = run_playwright_prune(cache_dir=cache, browsers_json=manifest)
+
+    assert sorted(removed) == ["chromium-1200", "chromium_headless_shell-1200", "ffmpeg-1009"]
+    assert sorted(p.name for p in cache.iterdir()) == [
+        ".links", "chromium-1234", "chromium_headless_shell-1234", "ffmpeg-1011"]
+
+
+def test_playwright_prune_keeps_everything_when_manifest_unreadable(tmp_path):
+    """A missing/garbled manifest must never turn into 'delete the browser'."""
+    from prune_news import run_playwright_prune
+    cache, _ = _fake_playwright_cache(tmp_path)
+    before = sorted(p.name for p in cache.iterdir())
+
+    removed = run_playwright_prune(cache_dir=cache, browsers_json=tmp_path / "nope.json")
+
+    assert removed == []
+    assert sorted(p.name for p in cache.iterdir()) == before
+
+
+def test_playwright_prune_ignores_foreign_dirs(tmp_path):
+    """Only Playwright-shaped names (<browser>-<revision>) are candidates."""
+    from prune_news import run_playwright_prune
+    cache, manifest = _fake_playwright_cache(tmp_path)
+    (cache / "my-notes").mkdir()
+    (cache / "README").write_text("keep")
+
+    removed = run_playwright_prune(cache_dir=cache, browsers_json=manifest)
+
+    assert "my-notes" not in removed
+    assert (cache / "my-notes").is_dir() and (cache / "README").exists()

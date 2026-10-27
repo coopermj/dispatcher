@@ -349,6 +349,14 @@ class DispatchConverter:
                 except Exception as e:
                     print(f"⚠️ Debug snapshot cleanup failed (run continues): {e}")
 
+                # Playwright upgrades leave the previous browser builds behind
+                # (~650 MB a set); keep only the revisions the installed package uses.
+                try:
+                    from prune_news import run_playwright_prune
+                    await asyncio.to_thread(run_playwright_prune)
+                except Exception as e:
+                    print(f"⚠️ Playwright cache cleanup failed (run continues): {e}")
+
             # Disk floor: hear about it before conversions start failing with ENOSPC
             try:
                 from prune_news import check_disk_free

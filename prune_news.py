@@ -199,6 +199,73 @@ def run_debug_prune(days, debug_dir=None):
     return removed
 
 
+_PW_BUILD_DIR_RE = re.compile(r"^[a-z][a-z0-9_]*-\d+$")
+
+
+def playwright_cache_dir():
+    """Where Playwright keeps browser builds (honors PLAYWRIGHT_BROWSERS_PATH)."""
+    import os
+    import sys
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override and override != "0":
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform.startswith("win"):
+        return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ms-playwright"
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ms-playwright"
+
+
+def playwright_browsers_json():
+    """The installed Playwright's own manifest of browser revisions it uses."""
+    import importlib.util
+    spec = importlib.util.find_spec("playwright")
+    if spec is None or not spec.origin:
+        return None
+    return Path(spec.origin).parent / "driver" / "package" / "browsers.json"
+
+
+def run_playwright_prune(cache_dir=None, browsers_json=None):
+    """Delete Playwright browser builds the installed package no longer references.
+
+    Each upgrade installs new <browser>-<revision> dirs and leaves the old ones
+    (hundreds of MB each) unless `playwright install` happens to garbage-collect
+    them. Keep exactly the revisions named in the package's browsers.json; if that
+    manifest can't be read, delete nothing. Returns the names removed; never raises.
+    """
+    import shutil
+    cache_dir = Path(cache_dir) if cache_dir is not None else playwright_cache_dir()
+    browsers_json = Path(browsers_json) if browsers_json is not None else playwright_browsers_json()
+    if not cache_dir.is_dir() or not browsers_json or not browsers_json.is_file():
+        return []
+    try:
+        manifest = json.loads(browsers_json.read_text())
+        keep = {f"{b['name'].replace('-', '_')}-{b['revision']}" for b in manifest["browsers"]}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"   ⚠️ could not read Playwright manifest {browsers_json}: {e} — not pruning")
+        return []
+    if not keep:
+        return []
+    removed = []
+    freed = 0
+    for d in sorted(cache_dir.iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d.name in keep:
+            continue
+        if not _PW_BUILD_DIR_RE.match(d.name):
+            continue  # not a Playwright build dir — leave it alone
+        try:
+            size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+            shutil.rmtree(d)
+            removed.append(d.name)
+            freed += size
+        except OSError as e:
+            print(f"   ⚠️ could not delete {d}: {e}")
+    if removed:
+        print(f"🧹 Removed {len(removed)} stale Playwright build(s) ({freed / 1e6:.0f} MB) from {cache_dir}: "
+              + ", ".join(removed))
+    return removed
+
+
 def is_pipeline_doc(entry):
     """True for docs this pipeline generated (dispatch_* names). Manually
     added files (WSJ papers, saved articles) are never auto-pruned."""

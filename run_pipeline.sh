@@ -8,7 +8,7 @@
 #   the log tail with recovery steps.
 # - main.py runs under timeout(1) so a hung Chromium can never wedge the box:
 #   one run stuck in browser.close() for 27 days once made every later cron
-#   run exit on the collision guard. 4h fits between the 6:30/7:05 morning
+#   run exit on the collision guard. 4h fits between the 6:50/7:30 morning
 #   slots and the 17:00 slot, and between 17:00 and the next morning.
 # - Dead-man's switch: if HEALTHCHECK_URL is set in .env, every run pings
 #   <url>/start, then <url> on success or <url>/fail with the failure report.
