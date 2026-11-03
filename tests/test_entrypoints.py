@@ -25,8 +25,9 @@ def test_run_pipeline_bounds_main_with_timeout():
     body = (ROOT / "run_pipeline.sh").read_text()
     assert "command -v timeout" in body, "guard timeout(1) so the script still runs on macOS"
     assert 'timeout ' in body and '"$PY" main.py' in body
-    # 4h fits between the 6:50/7:30 morning slots and the 17:00 slot, and
-    # between 17:00 and the next morning.
+    # Slots are 6:50/7:30/17:00/19:30; 4h fits between 7:30 and 17:00 and
+    # between 19:30 and the next morning (a 17:00 run at the ceiling just
+    # makes 19:30 trip the collision guard).
     assert "4h" in body
 
 
