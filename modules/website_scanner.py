@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
+from modules.tracking import normalize_article_url
 from config.settings import (
     DISPATCH_BASE_URL, MAX_ARTICLES, ARTICLE_AGE_LIMIT_DAYS,
     WEBSITE_SECTIONS, SKIP_KEYWORDS, BROWSER_TIMEOUT, MAX_CONCURRENT_SCANS
@@ -39,6 +40,11 @@ class WebsiteScanner:
             self.processed_urls = self.tracking_manager.get_processed_urls()
             if self.processed_urls:
                 print(f"📊 Loaded {len(self.processed_urls)} URLs for duplicate detection")
+
+    def add_processed_urls(self, urls):
+        """Merge URLs another pipeline already converted (e.g. the email
+        pipeline's resolved newsletter links) into the early-duplicate set."""
+        self.processed_urls |= {normalize_article_url(u) for u in urls} - {""}
 
     async def scan_for_articles(self, max_articles=None):
         """Scan The Dispatch website for articles (with parallel section scanning)"""
@@ -356,7 +362,7 @@ class WebsiteScanner:
 
         for article in articles:
             # Skip if already processed by URL (early duplicate detection)
-            if article['url'] in self.processed_urls:
+            if normalize_article_url(article['url']) in self.processed_urls:
                 skipped_duplicates += 1
                 continue
 

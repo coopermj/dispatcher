@@ -8,6 +8,7 @@ import os
 import traceback
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from config.settings import (
     BROWSER_USER_AGENT, BROWSER_HEADLESS, BROWSER_TIMEOUT,
@@ -279,6 +280,26 @@ class BrowserManager:
         except Exception:
             print("⚠️ Standard content selectors not found, but continuing...")
             return False
+
+    async def resolve_final_url(self, url, page=None):
+        """Follow `url` (typically a newsletter tracking link) and return where the
+        browser landed, or None if navigation failed or never left the tracking
+        host. Used to compare the email pipeline's articles with the website
+        pipeline's by their real address rather than by title."""
+        use_page = page or self.page
+        if use_page is None:
+            return None
+        try:
+            await use_page.goto(url, timeout=BROWSER_TIMEOUT, wait_until='domcontentloaded')
+            await asyncio.sleep(1)
+            landed = use_page.url
+        except Exception as e:
+            print(f"⚠️ Could not resolve {url[:60]}...: {e}")
+            return None
+        if not landed or urlsplit(landed).netloc.lower() == urlsplit(url).netloc.lower():
+            return None
+        print(f"🔗 Resolved to: {landed}")
+        return landed
 
     async def navigate_to_url(self, url):
         """Navigate to a URL and wait for content"""

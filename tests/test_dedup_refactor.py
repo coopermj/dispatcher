@@ -169,6 +169,7 @@ async def test_email_pipeline_uses_upload_if_new_and_tracks(tmp_path):
         B.return_value.get_page.return_value = MagicMock()
         B.return_value.get_context.return_value = MagicMock()
         B.return_value.convert_url_to_pdf_with_page = AsyncMock(return_value=True)
+        B.return_value.resolve_final_url = AsyncMock(return_value=None)
 
         E.return_value.search_dispatch_emails.return_value = [{'id': '1'}]
         E.return_value.get_message_content.return_value = {'id': '1'}

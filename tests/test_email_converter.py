@@ -25,6 +25,7 @@ def mock_email_converter():
         converter.browser_manager.start_browser_session = AsyncMock(return_value=True)
         converter.browser_manager.close_browser_session = AsyncMock()
         converter.browser_manager.convert_url_to_pdf_with_page = AsyncMock(return_value=True)
+        converter.browser_manager.resolve_final_url = AsyncMock(return_value=None)
 
         email_data = {
             'subject': 'Test Newsletter',
@@ -119,3 +120,32 @@ async def test_dispatch_auth_failure_alert_carries_the_managers_reason(mock_emai
     assert len(auth) == 1
     assert "unreachable" in auth[0]["detail"]
     assert "expired" not in auth[0]["detail"]
+
+
+ARTICLE = "https://thedispatch.com/newsletter/wanderland/democrats-donald-trump-congress-midterms/"
+
+
+async def test_email_whose_article_the_web_pipeline_already_did_is_skipped(mock_email_converter, tmp_path):
+    """2026-11-02: same Williamson piece, two titles. The resolved landing URL
+    is what both pipelines share, so compare on that before converting."""
+    from modules.tracking import normalize_article_url
+    c = mock_email_converter
+    c.browser_manager.resolve_final_url = AsyncMock(return_value=ARTICLE + "?utm_source=email")
+    c.web_processed_urls = {normalize_article_url(ARTICLE)}
+
+    await _run(c, tmp_path)
+
+    c.browser_manager.convert_url_to_pdf_with_page.assert_not_called()
+    c.tracking_manager.mark_email_processed.assert_not_called()
+    c.remarkable_manager.upload_if_new.assert_not_called()
+
+
+async def test_email_conversion_uses_and_records_the_resolved_url(mock_email_converter, tmp_path):
+    c = mock_email_converter
+    c.browser_manager.resolve_final_url = AsyncMock(return_value=ARTICLE)
+
+    await _run(c, tmp_path)
+
+    assert c._test_email_data["resolved_url"] == ARTICLE
+    c.browser_manager.convert_url_to_pdf_with_page.assert_called_once()
+    assert c.browser_manager.convert_url_to_pdf_with_page.call_args.args[0] == ARTICLE

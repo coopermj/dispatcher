@@ -24,6 +24,7 @@ from modules import (
     LinkProcessor
 )
 from modules.utils import create_safe_pdf_filename
+from modules.tracking import normalize_article_url
 from modules.alerts import record_failure, alert_on_failures
 from config.settings import (
     DEFAULT_RMAPI_PATH, DEFAULT_MAX_EMAILS, DEFAULT_UPLOAD_TO_REMARKABLE,
@@ -54,7 +55,7 @@ class DispatchPersistentConverter:
 
     def is_url_already_processed_by_web(self, url):
         """True if the website pipeline already produced a PDF for this URL."""
-        return url in self.web_processed_urls
+        return normalize_article_url(url) in self.web_processed_urls
 
     async def process_emails(self, output_dir='dispatch_persistent_pdfs', max_emails=None,
                              upload_to_remarkable=None, force_reprocess=None):
@@ -155,9 +156,18 @@ class DispatchPersistentConverter:
 
                 print(f"🔗 Found Read Online URL: {read_online_url}")
 
+                # The "Read Online" link is a tracking redirect; the website
+                # scanner knows the article by where it lands. Resolve it so the
+                # two pipelines can agree the piece is the same, whatever the
+                # email subject and web headline say (2026-11-02: two copies).
+                resolved_url = await self.browser_manager.resolve_final_url(read_online_url, page)
+                email_data['resolved_url'] = resolved_url or ''
+                article_url = resolved_url or read_online_url
+
                 # Cross-pipeline dedup: skip if the website pipeline already did this URL
-                if not force_reprocess and self.is_url_already_processed_by_web(read_online_url):
-                    print("⏭️  SKIPPED - URL already processed by web scanner (cross-dedup)")
+                if not force_reprocess and (self.is_url_already_processed_by_web(article_url)
+                                            or self.is_url_already_processed_by_web(read_online_url)):
+                    print("⏭️  SKIPPED - article already processed by web scanner (cross-dedup)")
                     skipped_count += 1
                     continue
 
@@ -171,11 +181,11 @@ class DispatchPersistentConverter:
                 if FOLLOW_ARTICLE_LINKS:
                     link_processor = LinkProcessor(self.browser_manager)
                     success = await link_processor.process_article_with_links(
-                        read_online_url, filename, page=page
+                        article_url, filename, page=page
                     )
                 else:
                     success = await self.browser_manager.convert_url_to_pdf_with_page(
-                        read_online_url, filename, page
+                        article_url, filename, page
                     )
                 if not success:
                     print("❌ Failed to convert")

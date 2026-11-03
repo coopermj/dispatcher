@@ -73,6 +73,10 @@ class DispatchConverter:
         self.failures = []  # see modules.alerts; shared with ReMarkableManager
         self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH, failures=self.failures)
         self.website_scanner = WebsiteScanner(self.browser_manager, self.tracking_manager)  # Pass tracking for early duplicate detection
+        # Articles the email pipeline already converted (by resolved landing URL),
+        # so the website scan doesn't produce a second copy under the web headline.
+        email_tracking = TrackingManager(tracking_file=DISPATCH_EMAIL_TRACKING_FILE)
+        self.website_scanner.add_processed_urls(email_tracking.get_processed_urls())
         # Configuration
         self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)

@@ -75,7 +75,8 @@ def test_expired_url_is_never_regathered(tmp_path):
         "pdf_path": "/nonexistent/pruned.pdf",
     })
     assert tm.is_url_processed("https://thedispatch.com/article/pruned-piece/")
-    assert "https://thedispatch.com/article/pruned-piece/" in tm.get_processed_urls()
+    from modules.tracking import normalize_article_url
+    assert normalize_article_url("https://thedispatch.com/article/pruned-piece/") in tm.get_processed_urls()
 
 
 def test_cleanup_keeps_expired_entries(tmp_path):

@@ -10,6 +10,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import TRACKING_FILE, MIN_PDF_SIZE_BYTES, PRUNE_NEWS_DAYS
+from urllib.parse import urlsplit
+
+
+def normalize_article_url(url):
+    """Canonical form for comparing article addresses across the two pipelines:
+    lowercase scheme/host, no query string or fragment, no trailing slash.
+    The newsletter's "Read Online" link lands on the article with utm_* params
+    attached; the website scanner sees the bare path. Both must compare equal."""
+    if not url:
+        return ""
+    parts = urlsplit(str(url).strip())
+    path = parts.path.rstrip("/")
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{path}"
 
 
 def _entry_timestamp(entry):
@@ -100,21 +113,22 @@ class TrackingManager:
     def is_url_processed(self, url):
         """Check if a URL has been successfully processed before (for early duplicate detection)"""
         # Check all tracked items for matching URL
+        wanted = normalize_article_url(url)
         for fingerprint, data in self.processed_emails.items():
-            stored_url = data.get('read_online_url', '')
+            stored_url = normalize_article_url(data.get('read_online_url', ''))
             message_id = data.get('message_id', '')
             url_hash = f"website_{hashlib.md5(url.encode()).hexdigest()}"
 
             # Permanently expired entries always count as processed — never re-send
             if data.get('remarkable_expired'):
-                if (stored_url and stored_url == url) or message_id == url_hash:
+                if (stored_url and stored_url == wanted) or message_id == url_hash:
                     return True
                 continue
 
             if not data.get('success', False):
                 continue
 
-            url_matches = (stored_url and stored_url == url) or (message_id == url_hash)
+            url_matches = (stored_url and stored_url == wanted) or (message_id == url_hash)
             if not url_matches:
                 continue
 
@@ -130,33 +144,39 @@ class TrackingManager:
         return False
 
     def get_processed_urls(self):
-        """Get a set of all successfully processed URLs for fast lookup"""
+        """Normalized set of every successfully processed article URL.
+
+        Includes both the URL we were given (`read_online_url`) and, for emails,
+        where the browser actually landed (`resolved_url`) — the latter is what
+        the website scanner can match against."""
         processed_urls = set()
+
+        def _urls(data):
+            return {normalize_article_url(data.get(k, ''))
+                    for k in ('read_online_url', 'resolved_url')} - {""}
 
         for fingerprint, data in self.processed_emails.items():
             # Permanently expired entries are always treated as processed
             if data.get('remarkable_expired'):
-                url = data.get('read_online_url', '')
-                if url:
-                    processed_urls.add(url)
+                processed_urls |= _urls(data)
                 continue
 
             if not data.get('success', False):
                 continue
 
-            url = data.get('read_online_url', '')
-            if not url:
+            urls = _urls(data)
+            if not urls:
                 continue
 
             # If already uploaded to reMarkable, local PDF existence is irrelevant
             if data.get('remarkable_uploaded'):
-                processed_urls.add(url)
+                processed_urls |= urls
                 continue
 
             # Not yet uploaded — only count if the local PDF still exists
             pdf_path = data.get('pdf_path', '')
             if pdf_path and os.path.exists(pdf_path):
-                processed_urls.add(url)
+                processed_urls |= urls
 
         return processed_urls
 
@@ -252,6 +272,7 @@ class TrackingManager:
             'date': email_data.get('date', ''),
             'message_id': email_data.get('message_id', ''),
             'read_online_url': email_data.get('read_online_url', ''),  # Store URL for duplicate detection
+            'resolved_url': email_data.get('resolved_url', ''),  # where the browser landed (cross-pipeline dedup)
             'processed_date': datetime.now().isoformat(),
             'pdf_path': str(pdf_path),
             'pdf_size': file_size,
