@@ -104,3 +104,18 @@ async def test_valid_pdf_upload_failure_still_saves_tracking(mock_email_converte
     tm.update_remarkable_status.assert_not_called()
     tm.save_tracking_data.assert_called()
     assert any(f["category"] == "upload" for f in mock_email_converter.failures)
+
+
+async def test_dispatch_auth_failure_alert_carries_the_managers_reason(mock_email_converter, tmp_path):
+    """The alert must say whether the site was unreachable or said we're logged
+    out, so a transient timeout doesn't read as 'go refresh your cookies'."""
+    am = mock_email_converter.auth_manager
+    am.authenticate_with_dispatch = AsyncMock(return_value=False)
+    am.dispatch_auth_failure = "site unreachable after 2 attempts: goto timeout 30000ms"
+
+    await _run(mock_email_converter, tmp_path)
+
+    auth = [f for f in mock_email_converter.failures if f["category"] == "auth"]
+    assert len(auth) == 1
+    assert "unreachable" in auth[0]["detail"]
+    assert "expired" not in auth[0]["detail"]

@@ -144,3 +144,45 @@ async def test_load_dispatch_cookies_drops_expired(tmp_path):
         assert await am.load_dispatch_cookies(ctx) is True
     loaded = ctx.add_cookies.call_args[0][0]
     assert sorted(c["name"] for c in loaded) == ["live_dated", "live_session"]
+
+
+# --- 2026-10-31: a 36-second "login failed (cookies expired?)" alert fired on a
+# homepage load that simply timed out; the next run authenticated with the same
+# cookies. One retry absorbs that, and the failure reason must say which it was.
+
+def _flaky_page(first_error, state):
+    """page.goto raises `first_error` once, then succeeds; evaluate returns `state`."""
+    page = AsyncMock()
+    page.goto = AsyncMock(side_effect=[first_error, None])
+    page.evaluate = AsyncMock(return_value=state)
+    return page
+
+
+async def test_auth_test_retries_once_when_homepage_load_fails():
+    am = _auth_manager()
+    page = _flaky_page(TimeoutError("goto timeout 30000ms"), {'loaded': True, 'valid': True})
+    with patch('modules.auth.asyncio.sleep', new_callable=AsyncMock):
+        assert await am.test_dispatch_authentication(page) is True
+    assert page.goto.await_count == 2
+    assert am.authenticated_with_dispatch is True
+    assert am.dispatch_auth_failure is None
+
+
+async def test_auth_test_reports_unreachable_site_when_both_loads_fail():
+    am = _auth_manager()
+    page = AsyncMock()
+    page.goto = AsyncMock(side_effect=TimeoutError("goto timeout 30000ms"))
+    with patch('modules.auth.asyncio.sleep', new_callable=AsyncMock):
+        assert await am.test_dispatch_authentication(page) is False
+    assert page.goto.await_count == 2
+    assert "unreachable" in am.dispatch_auth_failure
+    assert "expired" not in am.dispatch_auth_failure
+
+
+async def test_auth_test_reports_logged_out_when_site_answers_twice():
+    am = _auth_manager()
+    page = _page({'loaded': True, 'valid': False})
+    with patch('modules.auth.asyncio.sleep', new_callable=AsyncMock):
+        assert await am.test_dispatch_authentication(page) is False
+    assert page.goto.await_count == 2, "a not-yet-loaded store deserves one more try too"
+    assert "expired" in am.dispatch_auth_failure

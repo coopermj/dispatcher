@@ -40,3 +40,11 @@ def test_report_counts_failures_in_header():
     record_failure(failures, "upload", "b.pdf", "d2")
     report = build_failure_report(failures)
     assert "2 failure" in report
+
+
+def test_auth_workaround_tells_reader_when_not_to_refresh_cookies():
+    """A transient 'site unreachable' auth failure must not read as 'go refresh
+    your cookies' (2026-10-31: one timed-out homepage load sent exactly that)."""
+    from modules.alerts import WORKAROUNDS
+    assert "unreachable" in WORKAROUNDS["auth"]
+    assert "refresh_tokens_mac.sh" in WORKAROUNDS["auth"]

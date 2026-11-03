@@ -31,8 +31,10 @@ WORKAROUNDS = {
     "rmapi": "Check `~/rmapi/rmapi ls`; if auth expired, re-register the device "
              "with a code from https://my.remarkable.com/device/desktop/connect. "
              "If the client self-updated, the previous binary is ~/rmapi/rmapi.prev",
-    "auth": "Dispatch cookies expired: run ./refresh_tokens_mac.sh on the Mac (logs in, copies "
-            "tokens to the box). Google token: run `.venv/bin/python main.py` interactively to re-consent",
+    "auth": "If the detail says 'site unreachable', the site or network hiccupped — nothing to do "
+            "unless it repeats. If it says 'cookies expired': run ./refresh_tokens_mac.sh on the Mac "
+            "(logs in, copies tokens to the box). Google token: run `.venv/bin/python main.py` "
+            "interactively to re-consent",
     "disk": "Free space on the box: `du -sh ~/dispatchweb/dispatch_pdfs ~/dispatchweb/dispatch_persistent_pdfs "
             "~/.cache/ms-playwright`; stale pending uploads are abandoned automatically after PRUNE_NEWS_DAYS, "
             "so a full disk means something else is growing",

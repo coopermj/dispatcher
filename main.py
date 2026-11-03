@@ -194,7 +194,8 @@ class DispatchConverter:
         if not await self.auth_manager.authenticate_with_dispatch(page, context):
             print("❌ The Dispatch authentication failed")
             record_failure(self.failures, "auth", "The Dispatch",
-                           "login failed (cookies expired?)")
+                           getattr(self.auth_manager, "dispatch_auth_failure", None)
+                           or "login failed")
             await self.browser_manager.close_browser_session()
             return False
 

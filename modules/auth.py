@@ -66,6 +66,9 @@ class AuthManager:
         self.service = None
         self.user_info = None
         self.authenticated_with_dispatch = False
+        # Why the last Dispatch auth test failed, for the alert: "site unreachable"
+        # (timeouts, DNS, 5xx) vs "cookies expired" (site answered: not a member).
+        self.dispatch_auth_failure = None
 
     def authenticate_google(self):
         """Authenticate with Google (for both Gmail and The Dispatch)"""
@@ -173,26 +176,41 @@ class AuthManager:
 
     # ---- The Dispatch ----
 
+    DISPATCH_AUTH_ATTEMPTS = 2
+
     async def test_dispatch_authentication(self, page):
-        """Test if we're already authenticated with The Dispatch"""
-        try:
-            print("🔍 Testing existing authentication...")
+        """Test if we're already authenticated with The Dispatch.
 
-            # Try to access the homepage first and check for login indicators
-            await page.goto(DISPATCH_BASE_URL, timeout=30000)
-            await asyncio.sleep(3)
-
+        Two attempts: a single slow homepage load (2026-10-31, 30 s timeout)
+        used to fire a "cookies expired?" alert that the very next run
+        disproved. Sets `dispatch_auth_failure` so the alert can say whether
+        the site never answered or answered "not a member".
+        """
+        print("🔍 Testing existing authentication...")
+        self.dispatch_auth_failure = None
+        last_error = None
+        for attempt in range(1, self.DISPATCH_AUTH_ATTEMPTS + 1):
+            try:
+                await page.goto(DISPATCH_BASE_URL, timeout=30000)
+                await asyncio.sleep(3)
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ Error testing authentication (attempt {attempt}): {e}")
+                continue
+            last_error = None
             if await is_logged_in(page):
                 print("✅ Already authenticated with saved cookies!")
                 self.authenticated_with_dispatch = True
                 return True
+            print(f"❌ Not authenticated (attempt {attempt}) - the site reports no valid member session")
 
-            print("❌ Not authenticated - the site reports no valid member session")
-            return False
-
-        except Exception as e:
-            print(f"⚠️ Error testing authentication: {e}")
-            return False
+        if last_error is not None:
+            self.dispatch_auth_failure = (
+                f"site unreachable after {self.DISPATCH_AUTH_ATTEMPTS} attempts: {last_error}")
+        else:
+            self.dispatch_auth_failure = (
+                f"site answered {self.DISPATCH_AUTH_ATTEMPTS}x with no member session (cookies expired)")
+        return False
 
     async def _check_logged_in_quietly(self, page):
         """Quietly check if logged in without navigation or verbose output"""
