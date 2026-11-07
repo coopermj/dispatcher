@@ -8,10 +8,11 @@
 #   the log tail with recovery steps.
 # - main.py runs under timeout(1) so a hung Chromium can never wedge the box:
 #   one run stuck in browser.close() for 27 days once made every later cron
-#   run exit on the collision guard. Slots are 6:50/7:30/17:00/19:30; 4h
-#   fits between 7:30 and 17:00 and between 19:30 and the next morning. A
-#   17:00 run that hits the ceiling makes 19:30 trip the collision guard,
-#   which is the intended fail-safe, not a bug.
+#   run exit on the collision guard. Slots are 6:50/17:00/19:30 plus the
+#   weekday-morning watcher (--if-new-mail, every 10 min 07:00–09:50); 4h
+#   fits between the morning and 17:00 and between 19:30 and the next
+#   morning. A 17:00 run that hits the ceiling makes 19:30 trip the
+#   collision guard, which is the intended fail-safe, not a bug.
 # - Dead-man's switch: if HEALTHCHECK_URL is set in .env, every run pings
 #   <url>/start, then <url> on success or <url>/fail with the failure report.
 #   The email alerts above all ride the Gmail token; when it expired on
@@ -56,6 +57,17 @@ send_email_alert(
 )
 PYEOF
 }
+
+# Watcher mode (cron every 10 min on weekday mornings): run only if a Dispatch
+# email arrived that we have not converted yet — the Morning Dispatch is late
+# some days and a fixed slot either misses it or runs for nothing. A run already
+# holding the lock is expected here (the 06:50 slot is often still going), so
+# defer quietly rather than sending a collision alert.
+if [ "${1:-}" = "--if-new-mail" ]; then
+    flock -n "$LOCK" true 2>/dev/null || exit 0
+    "$PY" check_new_emails.py > check_new_emails.log 2>&1 || exit 0
+    echo "$(date '+%F %T') new mail -> running the pipeline" >> watch_mail.log
+fi
 
 exec 9>"$LOCK"
 if ! flock -n 9; then

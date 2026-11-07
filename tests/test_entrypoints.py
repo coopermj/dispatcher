@@ -25,9 +25,10 @@ def test_run_pipeline_bounds_main_with_timeout():
     body = (ROOT / "run_pipeline.sh").read_text()
     assert "command -v timeout" in body, "guard timeout(1) so the script still runs on macOS"
     assert 'timeout ' in body and '"$PY" main.py' in body
-    # Slots are 6:50/7:30/17:00/19:30; 4h fits between 7:30 and 17:00 and
-    # between 19:30 and the next morning (a 17:00 run at the ceiling just
-    # makes 19:30 trip the collision guard).
+    # Slots are 6:50/17:00/19:30 plus the weekday-morning watcher (every 10
+    # min 07:00–09:50); 4h fits between the morning and 17:00 and between
+    # 19:30 and the next morning (a 17:00 run at the ceiling just makes 19:30
+    # trip the collision guard).
     assert "4h" in body
 
 
@@ -181,3 +182,18 @@ async def test_refresh_auth_does_not_attempt_an_atlantic_login(monkeypatch):
 def test_refresh_tokens_mac_no_longer_ships_an_atlantic_jar():
     body = (ROOT / "refresh_tokens_mac.sh").read_text()
     assert "atlantic_cookies.json" not in body
+
+
+def test_run_pipeline_if_new_mail_defers_quietly_then_probes_the_mailbox():
+    """`run_pipeline.sh --if-new-mail` is the weekday-morning watcher (cron every
+    10 min, 07:00–09:50). It must (1) exit silently — no collision alert — when a
+    run already holds the lock, (2) ask check_new_emails.py whether anything is
+    new and exit silently if not, and only then (3) take the lock and run as a
+    normal slot."""
+    body = (ROOT / "run_pipeline.sh").read_text()
+    assert "--if-new-mail" in body
+    i_probe_lock = body.index('flock -n "$LOCK" true')
+    i_check = body.index('check_new_emails.py')
+    i_take_lock = body.index('exec 9>"$LOCK"')
+    assert i_probe_lock < i_check < i_take_lock, "defer on held lock, probe mail, then take the lock"
+    assert "collision_alert" not in body[i_probe_lock:i_check], "a held lock is expected here, not an alert"
