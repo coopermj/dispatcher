@@ -73,10 +73,6 @@ class DispatchConverter:
         self.failures = []  # see modules.alerts; shared with ReMarkableManager
         self.remarkable_manager = ReMarkableManager(rmapi_path or DEFAULT_RMAPI_PATH, failures=self.failures)
         self.website_scanner = WebsiteScanner(self.browser_manager, self.tracking_manager)  # Pass tracking for early duplicate detection
-        # Articles the email pipeline already converted (by resolved landing URL),
-        # so the website scan doesn't produce a second copy under the web headline.
-        email_tracking = TrackingManager(tracking_file=DISPATCH_EMAIL_TRACKING_FILE)
-        self.website_scanner.add_processed_urls(email_tracking.get_processed_urls())
         # Configuration
         self.output_dir = Path(output_dir or OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
@@ -408,6 +404,13 @@ class DispatchConverter:
     async def get_website_content(self, max_articles):
         """Get website content to process"""
         print(f"\n🔍 Scanning website for up to {max_articles} articles...")
+
+        # Articles the email pipeline already converted (by resolved landing URL),
+        # so the scan doesn't produce a second copy under the web headline. Read
+        # here, not at construction: main() runs the email pass AFTER building this
+        # converter, and its entries must be visible to this run's scan.
+        email_tracking = TrackingManager(tracking_file=DISPATCH_EMAIL_TRACKING_FILE)
+        self.website_scanner.add_processed_urls(email_tracking.get_processed_urls())
 
         articles = await self.website_scanner.scan_for_articles(max_articles)
         self.stats['total_articles'] = len(articles)

@@ -120,12 +120,17 @@ async def test_resolve_final_url_is_none_on_navigation_error():
 
 # --- main.py wiring --------------------------------------------------------
 
-def test_website_scanner_is_told_about_email_pipeline_urls():
-    email_urls = {ARTICLE}
+async def test_scanner_learns_email_urls_at_scan_time_not_at_construction():
+    """main() builds the converter, THEN runs the email pass, THEN scans the
+    website. 2026-11-03..06: every newsletter the email pass had just converted
+    was converted again by the website pass of the same run, because the
+    scanner only read the email tracking file when the converter was built."""
+    email_urls, order = set(), []
 
     def tracking_factory(tracking_file=None):
         m = MagicMock()
-        m.get_processed_urls.return_value = email_urls if tracking_file is not None else set()
+        m.get_processed_urls.side_effect = (
+            (lambda: set(email_urls)) if tracking_file is not None else (lambda: set()))
         return m
 
     with patch('main.AuthManager'), patch('main.EmailHandler'), patch('main.BrowserManager'), \
@@ -133,7 +138,15 @@ def test_website_scanner_is_told_about_email_pipeline_urls():
          patch('main.ReMarkableManager'), patch('main.WebsiteScanner') as WS, \
          patch('main.LinkProcessor'), \
          patch('config.settings.OUTPUT_DIR', Path('/tmp/dispatch_test_pdfs')):
+        WS.return_value.add_processed_urls = MagicMock(
+            side_effect=lambda urls: order.append(("add", set(urls))))
+        WS.return_value.scan_for_articles = AsyncMock(
+            side_effect=lambda *a, **k: order.append("scan") or [])
         from main import DispatchConverter
-        DispatchConverter()
+        converter = DispatchConverter()
+        order.clear()                 # whatever construction did is not the point
+        email_urls.add(ARTICLE)       # the email pass of this run writes its entry
 
-    WS.return_value.add_processed_urls.assert_called_once_with(email_urls)
+        await converter.get_website_content(5)
+
+    assert order == [("add", {ARTICLE}), "scan"], order
